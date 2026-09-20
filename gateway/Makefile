@@ -19,3 +19,7 @@ clean:
 	rm -rf $(BIN_DIR)
 	go clean -cache -testcache
 up: fmt lint vuln test build
+
+generate:
+	cd api/cfg && go tool oapi-codegen -config server.yaml ../openapi.yaml
+	cd api/cfg && go tool oapi-codegen -config spec.yaml ../openapi.yaml
