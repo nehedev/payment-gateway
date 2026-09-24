@@ -9,23 +9,27 @@ import (
 
 	"github.com/nehemiah-dev/payment-gateway/internal/api"
 	"github.com/nehemiah-dev/payment-gateway/internal/database"
+	"github.com/nehemiah-dev/payment-gateway/internal/service"
 )
 
 type Server struct {
-	db *database.DB
+	db             *database.DB
+	paymentService *service.PaymentService
 }
 
-func NewServer(db *database.DB) *Server {
-	return &Server{db: db}
+func NewServer(db *database.DB, paymentService *service.PaymentService) *Server {
+	return &Server{
+		db:             db,
+		paymentService: paymentService,
+	}
 }
 
 // GetHealth handles GET /health — LIVENESS only, no DB dependency.
 func (s *Server) GetHealth(c *gin.Context) {
-	status := api.HealthStatusHealthy.Ptr()
-	c.JSON(http.StatusOK, api.GetHealth200JSONResponse{Status: status})
+	status := api.Healthy
+	c.JSON(http.StatusOK, api.HealthResponse{Status: status})
 }
 
-// GetReadiness handles GET /ready — pings the database
 func (s *Server) GetReadiness(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 	defer cancel()
