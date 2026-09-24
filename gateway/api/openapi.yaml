@@ -15,9 +15,78 @@ servers:
 tags:
   - name: Health
     description: Health and status endpoints
+  - name: Payments
+    description: Payment authorization and management
 
 # endpoints go here
 paths:
+  /api/v1/payments/authorize:
+    post:
+      operationId: authorizePayment
+      summary: Authorize a payment
+      description: |
+        Creates a payment authorization by placing a hold on the customer's card.
+        This operation requires an Idempotency-Key header to prevent duplicate charges.
+        The payment starts in PENDING state and transitions to AUTHORIZED upon success.
+      tags: [Payments]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Unique key to ensure idempotent processing (max 255 chars)
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizePaymentRequest'
+      responses:
+        '200':
+          description: Payment authorized successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+          headers:
+            X-Idempotent-Replayed:
+              description: Present with value "true" if this is a replayed cached response
+              schema:
+                type: string
+        '400':
+          description: Validation error or invalid card
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '402':
+          description: Payment required - insufficient funds
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Idempotency key conflict - same key used with different request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Bank service temporarily unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /health:
     get:
       operationId: getHealth
@@ -38,6 +107,152 @@ paths:
                 $ref: '#/components/schemas/HealthResponse'
 components:
   schemas:
+    # Payment Schemas
+    AuthorizePaymentRequest:
+      type: object
+      required:
+        - order_id
+        - customer_id
+        - amount
+        - currency
+        - card_number
+        - card_expiry
+        - card_cvv
+      properties:
+        order_id:
+          type: string
+          description: Unique identifier for the order
+          example: "order-123"
+        customer_id:
+          type: string
+          description: Unique identifier for the customer
+          example: "customer-456"
+        amount:
+          type: integer
+          format: int64
+          description: Payment amount in cents (e.g., 5000 = $50.00)
+          minimum: 1
+          example: 5000
+        currency:
+          type: string
+          description: Three-letter ISO 4217 currency code
+          pattern: '^[A-Z]{3}$'
+          minLength: 3
+          maxLength: 3
+          example: "USD"
+        card_number:
+          type: string
+          description: Card number (13-19 digits, will be validated with Luhn algorithm)
+          minLength: 13
+          maxLength: 19
+          pattern: '^[0-9]{13,19}$'
+          example: "4111111111111111"
+        card_expiry:
+          type: string
+          description: Card expiry date in format MM/YYYY
+          pattern: '^(0[1-9]|1[0-2])/[0-9]{4}$'
+          example: "12/2030"
+        card_cvv:
+          type: string
+          description: Card verification value (3-4 digits)
+          minLength: 3
+          maxLength: 4
+          pattern: '^[0-9]{3,4}$'
+          example: "123"
+
+    PaymentResponse:
+      type: object
+      required:
+        - payment_id
+        - reference
+        - order_id
+        - customer_id
+        - amount
+        - currency
+        - state
+        - created_at
+      properties:
+        payment_id:
+          type: string
+          description: Internal payment ID
+          example: "12345"
+        reference:
+          type: string
+          format: uuid
+          description: Unique payment reference (UUID)
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        order_id:
+          type: string
+          description: Order identifier from the request
+          example: "order-123"
+        customer_id:
+          type: string
+          description: Customer identifier from the request
+          example: "customer-456"
+        amount:
+          type: integer
+          format: int64
+          description: Payment amount in cents
+          example: 5000
+        currency:
+          type: string
+          description: Currency code
+          example: "USD"
+        state:
+          $ref: '#/components/schemas/PaymentState'
+        bank_auth_id:
+          type: string
+          description: Bank authorization ID (present when state is authorized)
+          example: "auth_550e8400-e29b-41d4-a716-446655440000"
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when payment was created
+          example: "2026-09-24T12:34:56Z"
+        authorized_at:
+          type: string
+          format: date-time
+          description: Timestamp when payment was authorized (present when state is authorized)
+          example: "2026-09-24T12:34:57Z"
+
+    PaymentState:
+      type: string
+      enum:
+        - pending
+        - authorized
+        - captured
+        - voided
+        - refunded
+        - failed
+      description: |
+        Payment lifecycle state:
+        - pending: Initial state, awaiting authorization
+        - authorized: Funds reserved, awaiting capture
+        - captured: Funds captured successfully
+        - voided: Authorization cancelled before capture
+        - refunded: Captured payment refunded
+        - failed: Authorization or other operation failed
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code
+          example: "validation_error"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Invalid card number"
+        code:
+          type: string
+          description: Additional error code (optional)
+          example: "invalid_card"
+
+    # Health Schemas
     HealthResponse:
       type: object
       properties:
