@@ -12,6 +12,7 @@ type Config struct {
 	Database DatabaseConfig
 	AppEnv   string
 	Server   ServerConfig
+	Bank     BankConfig
 }
 
 type ServerConfig struct {
@@ -34,6 +35,12 @@ type DatabaseConfig struct {
 	MinConns        int32
 	MaxConnLifetime time.Duration
 	MaxConnIdleTime time.Duration
+}
+
+type BankConfig struct {
+	BaseURL    string
+	Timeout    time.Duration
+	MaxRetries int
 }
 
 func Load() (*Config, error) {
@@ -66,6 +73,14 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	bankTimeout, err := getEnvAsDuration("BANK_TIMEOUT", 10*time.Second) // comfortably above the mock's 2000ms max injected latency
+	if err != nil {
+		return nil, err
+	}
+	bankMaxRetries, err := getEnvAsInt32("BANK_MAX_RETRIES", 3)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
 		Server: ServerConfig{
@@ -86,6 +101,11 @@ func Load() (*Config, error) {
 			MinConns:        minConns,
 			MaxConnLifetime: maxConnLifetime,
 			MaxConnIdleTime: maxConnIdleTime,
+		},
+		Bank: BankConfig{
+			BaseURL:    getEnv("BANK_BASE_URL", "http://localhost:8787"),
+			Timeout:    bankTimeout,
+			MaxRetries: int(bankMaxRetries),
 		},
 	}
 
@@ -135,6 +155,12 @@ func (c *DatabaseConfig) DSN() string {
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		c.Host, c.Port, c.User, c.Password, c.DBName, c.SSLMode,
 	)
+}
+
+// URL returns a URL-style DSN for tools that require it (golang-migrate CLI, psql, etc.)
+func (c *DatabaseConfig) URL() string {
+	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		c.User, c.Password, c.Host, c.Port, c.DBName, c.SSLMode)
 }
 
 func getEnv(key, defaultValue string) string {
