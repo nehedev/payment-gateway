@@ -120,6 +120,7 @@ func (c *Client) Void(ctx context.Context, req VoidRequest) (*VoidResult, error)
 		VoidedAt:        wire.VoidedAt,
 	}, nil
 }
+
 // No GetVoid — the spec doesn't expose a GET /voids/{id} endpoint.
 
 func (c *Client) Refund(ctx context.Context, req RefundRequest) (*RefundResult, error) {

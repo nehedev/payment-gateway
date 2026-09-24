@@ -92,7 +92,8 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 		ctx := c.Request.Context()
 		existing, err := repo.Get(ctx, idempotencyKey, requestPath)
 		if err != nil {
-			zap.L().Error("failed to check idempotency key",
+			zap.L().Error(
+				"failed to check idempotency key",
 				zap.Error(err),
 				zap.String("idempotency_key", idempotencyKey),
 				zap.String("path", requestPath),
@@ -106,7 +107,8 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 		if existing != nil {
 			// Same key, different body — the client is misusing the key.
 			if existing.RequestHash != requestHash {
-				zap.L().Warn("idempotency key reused with different request body",
+				zap.L().Warn(
+					"idempotency key reused with different request body",
 					zap.String("idempotency_key", idempotencyKey),
 					zap.String("path", requestPath),
 				)
@@ -122,7 +124,8 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 
 			var responseBody interface{}
 			if err := json.Unmarshal(existing.ResponseBody, &responseBody); err != nil {
-				zap.L().Error("failed to unmarshal cached response",
+				zap.L().Error(
+					"failed to unmarshal cached response",
 					zap.Error(err),
 					zap.String("idempotency_key", idempotencyKey),
 				)
@@ -134,7 +137,8 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 				return
 			}
 
-			zap.L().Info("replaying cached response",
+			zap.L().Info(
+				"replaying cached response",
 				zap.String("idempotency_key", idempotencyKey),
 				zap.String("path", requestPath),
 				zap.Int("status_code", existing.ResponseCode),
@@ -166,13 +170,15 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 
 			if err := repo.Store(ctx, record); err != nil {
 				// Log but don't fail — the response has already been sent.
-				zap.L().Error("failed to store idempotency record",
+				zap.L().Error(
+					"failed to store idempotency record",
 					zap.Error(err),
 					zap.String("idempotency_key", idempotencyKey),
 					zap.String("path", requestPath),
 				)
 			} else {
-				zap.L().Debug("stored idempotency record",
+				zap.L().Debug(
+					"stored idempotency record",
 					zap.String("idempotency_key", idempotencyKey),
 					zap.String("path", requestPath),
 					zap.Int("status_code", recorder.statusCode),

@@ -55,7 +55,6 @@ func (r *idempotencyRepository) Get(ctx context.Context, key, requestPath string
 		&record.ResponseBody,
 		&record.CreatedAt,
 	)
-
 	if err != nil {
 		if err == pgx.ErrNoRows || err == sql.ErrNoRows {
 			return nil, nil // Not found is not an error - return nil record
@@ -74,14 +73,14 @@ func (r *idempotencyRepository) Store(ctx context.Context, record *IdempotencyRe
 		ON CONFLICT (key, request_path) DO NOTHING
 	`
 
-	_, err := r.db.Querier().Exec(ctx, query,
+	_, err := r.db.Querier().Exec(
+		ctx, query,
 		record.Key,
 		record.RequestPath,
 		record.RequestHash,
 		record.ResponseCode,
 		record.ResponseBody,
 	)
-
 	if err != nil {
 		return fmt.Errorf("store idempotency key: %w", err)
 	}

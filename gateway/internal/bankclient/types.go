@@ -8,9 +8,9 @@ import "time"
 type ErrorCode string
 
 const (
-	ErrorInvalidCard            ErrorCode = "invalid_card"
-	ErrorInvalidCVV              ErrorCode = "invalid_cvv"
-	ErrorInvalidAmount           ErrorCode = "invalid_amount"
+	ErrorInvalidCard              ErrorCode = "invalid_card"
+	ErrorInvalidCVV               ErrorCode = "invalid_cvv"
+	ErrorInvalidAmount            ErrorCode = "invalid_amount"
 	ErrorCardExpired              ErrorCode = "card_expired"
 	ErrorInsufficientFunds        ErrorCode = "insufficient_funds"
 	ErrorMissingIdempotencyKey    ErrorCode = "missing_idempotency_key"

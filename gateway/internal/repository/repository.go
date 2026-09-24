@@ -23,8 +23,8 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 
 // --- PAYMENT WRAPPER METHODS ---
 
-func (r *Repository) CreatePayment(ctx context.Context, arg store.CreatePaymentParams) (store.Payment, error) {
-	return r.queries.CreatePayment(ctx, arg)
+func (r *Repository) CreatePayment(ctx context.Context, arg *store.CreatePaymentParams) (store.Payment, error) {
+	return r.queries.CreatePayment(ctx, *arg)
 }
 
 func (r Repository) GetPaymentByID(ctx context.Context, id int) (store.Payment, error) {
@@ -50,6 +50,7 @@ func (r *Repository) VoidPayment(ctx context.Context, arg store.VoidPaymentParam
 func (r *Repository) RefundPayment(ctx context.Context, arg store.RefundPaymentParams) (store.Payment, error) {
 	return r.queries.RefundPayment(ctx, arg)
 }
+
 func (r *Repository) ListPaymentsByCustomer(ctx context.Context, arg store.ListPaymentsByCustomerParams) ([]store.Payment, error) {
 	return r.queries.ListPaymentsByCustomer(ctx, arg)
 }

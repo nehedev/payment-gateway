@@ -56,6 +56,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, reqBody any
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(math.Pow(2, float64(attempt))) * 100 * time.Millisecond
+			// nolint:gosec // Using math/rand for jitter is acceptable here
 			jitter := time.Duration(rand.Int63n(int64(backoff)/2 + 1))
 			select {
 			case <-time.After(backoff + jitter):

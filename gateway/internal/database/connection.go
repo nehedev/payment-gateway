@@ -135,11 +135,11 @@ type TxFn func(ctx context.Context, q Querier) error
 // isolation level. Commits on success; rolls back on error or panic
 // (re-panicking after cleanup so the panic isn't silently swallowed).
 func (d *DB) WithTx(ctx context.Context, fn TxFn) error {
-	return d.WithTxOptions(ctx, pgx.TxOptions{}, fn)
+	return d.WithTxOptions(ctx, &pgx.TxOptions{}, fn)
 }
 
-func (d *DB) WithTxOptions(ctx context.Context, opts pgx.TxOptions, fn TxFn) (err error) {
-	tx, err := d.pool.BeginTx(ctx, opts)
+func (d *DB) WithTxOptions(ctx context.Context, opts *pgx.TxOptions, fn TxFn) (err error) {
+	tx, err := d.pool.BeginTx(ctx, *opts)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
@@ -173,7 +173,7 @@ func (d *DB) WithSerializableTx(ctx context.Context, fn TxFn) error {
 
 	var err error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		err = d.WithTxOptions(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable}, fn)
+		err = d.WithTxOptions(ctx, &pgx.TxOptions{IsoLevel: pgx.Serializable}, fn)
 		if err == nil {
 			return nil
 		}
