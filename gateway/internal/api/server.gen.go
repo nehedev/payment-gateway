@@ -9,12 +9,167 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
+
+// Defines values for HealthResponseStatus.
+const (
+	Healthy   HealthResponseStatus = "healthy"
+	Unhealthy HealthResponseStatus = "unhealthy"
+)
+
+// Valid indicates whether the value is a known member of the HealthResponseStatus enum.
+func (e HealthResponseStatus) Valid() bool {
+	switch e {
+	case Healthy:
+		return true
+	case Unhealthy:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PaymentState.
+const (
+	Authorized PaymentState = "authorized"
+	Captured   PaymentState = "captured"
+	Failed     PaymentState = "failed"
+	Pending    PaymentState = "pending"
+	Refunded   PaymentState = "refunded"
+	Voided     PaymentState = "voided"
+)
+
+// Valid indicates whether the value is a known member of the PaymentState enum.
+func (e PaymentState) Valid() bool {
+	switch e {
+	case Authorized:
+		return true
+	case Captured:
+		return true
+	case Failed:
+		return true
+	case Pending:
+		return true
+	case Refunded:
+		return true
+	case Voided:
+		return true
+	default:
+		return false
+	}
+}
+
+// AuthorizePaymentRequest defines model for AuthorizePaymentRequest.
+type AuthorizePaymentRequest struct {
+	// Amount Payment amount in cents (e.g., 5000 = $50.00)
+	Amount int64 `json:"amount"`
+
+	// CardCvv Card verification value (3-4 digits)
+	CardCvv string `json:"card_cvv"`
+
+	// CardExpiry Card expiry date in format MM/YYYY
+	CardExpiry string `json:"card_expiry"`
+
+	// CardNumber Card number (13-19 digits, will be validated with Luhn algorithm)
+	CardNumber string `json:"card_number"`
+
+	// Currency Three-letter ISO 4217 currency code
+	Currency string `json:"currency"`
+
+	// CustomerId Unique identifier for the customer
+	CustomerId string `json:"customer_id"`
+
+	// OrderId Unique identifier for the order
+	OrderId string `json:"order_id"`
+}
+
+// ErrorResponse defines model for ErrorResponse.
+type ErrorResponse struct {
+	// Code Additional error code (optional)
+	Code string `json:"code,omitempty,omitzero"`
+
+	// Error Machine-readable error code
+	Error string `json:"error"`
+
+	// Message Human-readable error message
+	Message string `json:"message"`
+}
+
+// HealthResponse defines model for HealthResponse.
+type HealthResponse struct {
+	Status HealthResponseStatus `json:"status,omitempty,omitzero"`
+}
+
+// HealthResponseStatus defines model for HealthResponse.Status.
+type HealthResponseStatus string
+
+// PaymentResponse defines model for PaymentResponse.
+type PaymentResponse struct {
+	// Amount Payment amount in cents
+	Amount int64 `json:"amount"`
+
+	// AuthorizedAt Timestamp when payment was authorized (present when state is authorized)
+	AuthorizedAt time.Time `json:"authorized_at,omitempty,omitzero"`
+
+	// BankAuthId Bank authorization ID (present when state is authorized)
+	BankAuthId string `json:"bank_auth_id,omitempty,omitzero"`
+
+	// CreatedAt Timestamp when payment was created
+	CreatedAt time.Time `json:"created_at"`
+
+	// Currency Currency code
+	Currency string `json:"currency"`
+
+	// CustomerId Customer identifier from the request
+	CustomerId string `json:"customer_id"`
+
+	// OrderId Order identifier from the request
+	OrderId string `json:"order_id"`
+
+	// PaymentId Internal payment ID
+	PaymentId string `json:"payment_id"`
+
+	// Reference Unique payment reference (UUID)
+	Reference openapi_types.UUID `json:"reference"`
+
+	// State Payment lifecycle state:
+	// - pending: Initial state, awaiting authorization
+	// - authorized: Funds reserved, awaiting capture
+	// - captured: Funds captured successfully
+	// - voided: Authorization cancelled before capture
+	// - refunded: Captured payment refunded
+	// - failed: Authorization or other operation failed
+	State PaymentState `json:"state"`
+}
+
+// PaymentState Payment lifecycle state:
+// - pending: Initial state, awaiting authorization
+// - authorized: Funds reserved, awaiting capture
+// - captured: Funds captured successfully
+// - voided: Authorization cancelled before capture
+// - refunded: Captured payment refunded
+// - failed: Authorization or other operation failed
+type PaymentState string
+
+// AuthorizePaymentParams defines parameters for AuthorizePayment.
+type AuthorizePaymentParams struct {
+	// IdempotencyKey Unique key to ensure idempotent processing (max 255 chars)
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
+// AuthorizePaymentJSONRequestBody defines body for AuthorizePayment for application/json ContentType.
+type AuthorizePaymentJSONRequestBody = AuthorizePaymentRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// AuthorizePayment Authorize a payment
+	// (POST /api/v1/payments/authorize)
+	AuthorizePayment(c *gin.Context, params AuthorizePaymentParams)
 
 	// (GET /health)
 	GetHealth(c *gin.Context)
@@ -28,6 +183,49 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(c *gin.Context)
+
+// AuthorizePayment operation middleware
+func (siw *ServerInterfaceWrapper) AuthorizePayment(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AuthorizePaymentParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for Idempotency-Key, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter Idempotency-Key: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.IdempotencyKey = IdempotencyKey
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter Idempotency-Key is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AuthorizePayment(c, params)
+}
 
 // GetHealth operation middleware
 func (siw *ServerInterfaceWrapper) GetHealth(c *gin.Context) {
@@ -69,7 +267,109 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 		ErrorHandler:       errorHandler,
 	}
 
+	router.POST(options.BaseURL+"/api/v1/payments/authorize", wrapper.AuthorizePayment)
 	router.GET(options.BaseURL+"/health", wrapper.GetHealth)
+}
+
+type AuthorizePaymentRequestObject struct {
+	Params AuthorizePaymentParams
+	Body   *AuthorizePaymentJSONRequestBody
+}
+
+type AuthorizePaymentResponseObject interface {
+	VisitAuthorizePaymentResponse(w http.ResponseWriter) error
+}
+
+type AuthorizePayment200ResponseHeaders struct {
+	XIdempotentReplayed string
+}
+
+type AuthorizePayment200JSONResponse struct {
+	Body    PaymentResponse
+	Headers AuthorizePayment200ResponseHeaders
+}
+
+func (response AuthorizePayment200JSONResponse) VisitAuthorizePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Idempotent-Replayed", fmt.Sprint(response.Headers.XIdempotentReplayed))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AuthorizePayment400JSONResponse ErrorResponse
+
+func (response AuthorizePayment400JSONResponse) VisitAuthorizePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AuthorizePayment402JSONResponse ErrorResponse
+
+func (response AuthorizePayment402JSONResponse) VisitAuthorizePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(402)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AuthorizePayment409JSONResponse ErrorResponse
+
+func (response AuthorizePayment409JSONResponse) VisitAuthorizePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AuthorizePayment500JSONResponse ErrorResponse
+
+func (response AuthorizePayment500JSONResponse) VisitAuthorizePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AuthorizePayment503JSONResponse ErrorResponse
+
+func (response AuthorizePayment503JSONResponse) VisitAuthorizePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type GetHealthRequestObject struct {
@@ -109,6 +409,9 @@ func (response GetHealth503JSONResponse) VisitGetHealthResponse(w http.ResponseW
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// AuthorizePayment Authorize a payment
+	// (POST /api/v1/payments/authorize)
+	AuthorizePayment(ctx context.Context, request AuthorizePaymentRequestObject) (AuthorizePaymentResponseObject, error)
 
 	// (GET /health)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
@@ -169,6 +472,39 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictGinServerOptions
+}
+
+// AuthorizePayment operation middleware
+func (sh *strictHandler) AuthorizePayment(ctx *gin.Context, params AuthorizePaymentParams) {
+	var request AuthorizePaymentRequestObject
+
+	request.Params = params
+
+	var body AuthorizePaymentJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(ctx, err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.AuthorizePayment(ctx, request.(AuthorizePaymentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AuthorizePayment")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		sh.options.HandlerErrorFunc(ctx, err)
+	} else if validResponse, ok := response.(AuthorizePaymentResponseObject); ok {
+		if err := validResponse.VisitAuthorizePaymentResponse(ctx.Writer); err != nil {
+			sh.options.ResponseErrorHandlerFunc(ctx, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(ctx, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // GetHealth operation middleware
