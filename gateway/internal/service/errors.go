@@ -8,59 +8,61 @@ import (
 	"github.com/nehemiah-dev/payment-gateway/internal/bankclient"
 )
 
-// ServiceError represents an error from the service layer with HTTP status mapping
-type ServiceError struct {
+// PaymentError represents an error from the payment service layer.
+type PaymentError struct {
 	StatusCode int
 	Code       string
 	Message    string
 	Err        error
 }
 
-func (e *ServiceError) Error() string {
+func (e *PaymentError) Error() string {
 	if e.Err != nil {
 		return fmt.Sprintf("%s: %v", e.Message, e.Err)
 	}
 	return e.Message
 }
 
-func (e *ServiceError) Unwrap() error {
+func (e *PaymentError) Unwrap() error {
 	return e.Err
 }
 
-func NewValidationError(message string) *ServiceError {
-	return &ServiceError{
+// Error constructors
+
+func NewValidationError(message string) *PaymentError {
+	return &PaymentError{
 		StatusCode: http.StatusBadRequest,
 		Code:       "validation_error",
 		Message:    message,
 	}
 }
 
-func NewInsufficientFundsError(message string) *ServiceError {
-	return &ServiceError{
+func NewInsufficientFundsError(message string) *PaymentError {
+	return &PaymentError{
 		StatusCode: http.StatusPaymentRequired,
 		Code:       "insufficient_funds",
 		Message:    message,
 	}
 }
 
-func NewCardExpiredError(message string) *ServiceError {
-	return &ServiceError{
+func NewCardExpiredError(message string) *PaymentError {
+	return &PaymentError{
 		StatusCode: http.StatusBadRequest,
 		Code:       "card_expired",
 		Message:    message,
 	}
 }
 
-func NewInvalidCardError(message string) *ServiceError {
-	return &ServiceError{
+func NewInvalidCardError(message string) *PaymentError {
+	return &PaymentError{
 		StatusCode: http.StatusBadRequest,
 		Code:       "invalid_card",
 		Message:    message,
 	}
 }
 
-func NewBankUnavailableError(err error) *ServiceError {
-	return &ServiceError{
+func NewBankUnavailableError(err error) *PaymentError {
+	return &PaymentError{
 		StatusCode: http.StatusServiceUnavailable,
 		Code:       "bank_unavailable",
 		Message:    "Payment processor temporarily unavailable, please try again",
@@ -68,8 +70,8 @@ func NewBankUnavailableError(err error) *ServiceError {
 	}
 }
 
-func NewInternalError(err error) *ServiceError {
-	return &ServiceError{
+func NewInternalError(err error) *PaymentError {
+	return &PaymentError{
 		StatusCode: http.StatusInternalServerError,
 		Code:       "internal_error",
 		Message:    "Internal server error",
@@ -77,10 +79,11 @@ func NewInternalError(err error) *ServiceError {
 	}
 }
 
-// MapBankError converts bank client errors to service errors with appropriate HTTP status codes
+// MapBankError converts bank client errors to service errors with appropriate HTTP status codes.
 func MapBankError(err error) error {
 	var bankErr *bankclient.Error
 	if !errors.As(err, &bankErr) {
+		// Not a bank error - treat as internal error
 		return NewInternalError(err)
 	}
 
@@ -105,10 +108,11 @@ func MapBankError(err error) error {
 		return NewInternalError(err)
 
 	default:
+		// Unknown bank error
 		if bankErr.Retryable {
 			return NewBankUnavailableError(err)
 		}
-		return &ServiceError{
+		return &PaymentError{
 			StatusCode: http.StatusBadRequest,
 			Code:       string(bankErr.Code),
 			Message:    bankErr.Message,

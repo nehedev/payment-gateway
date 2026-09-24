@@ -199,7 +199,7 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateAuthorizationRequest(tt.req)
+			err := ValidateAuthorizationRequest(&tt.req)
 			if tt.wantErr {
 				assert.Error(t, err)
 				if tt.errMsg != "" {

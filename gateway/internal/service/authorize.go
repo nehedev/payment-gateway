@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"go.uber.org/zap"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/nehemiah-dev/payment-gateway/internal/bankclient"
 	"github.com/nehemiah-dev/payment-gateway/internal/database"
 	"github.com/nehemiah-dev/payment-gateway/internal/domain"
@@ -20,7 +20,7 @@ import (
 // Authorize processes a payment authorization request.
 // The payment record is created before the bank call so a crash mid-flight
 // leaves a PENDING row that can be reconciled, rather than a lost transaction.
-func (s *PaymentService) Authorize(ctx context.Context, req models.AuthorizePaymentRequest, idempotencyKey string) (*models.PaymentResponse, error) {
+func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePaymentRequest, idempotencyKey string) (*models.PaymentResponse, error) {
 	if err := ValidateAuthorizationRequest(req); err != nil {
 		return nil, NewValidationError(err.Error())
 	}
@@ -38,12 +38,11 @@ func (s *PaymentService) Authorize(ctx context.Context, req models.AuthorizePaym
 	metadataJSON, _ := json.Marshal(metadata)
 
 	var paymentResponse *models.PaymentResponse
-	var txErr error
 
-	txErr = s.db.WithTx(ctx, func(txCtx context.Context, q database.Querier) error {
+	txErr := s.db.WithTx(ctx, func(txCtx context.Context, _ database.Querier) error {
 		// Insert the PENDING record before touching the bank so the row exists
 		// even if the process crashes after the bank responds.
-		payment, err := s.repo.CreatePayment(txCtx, store.CreatePaymentParams{
+		payment, err := s.repo.CreatePayment(txCtx, &store.CreatePaymentParams{
 			AmountCents:  req.Amount,
 			Currency:     req.Currency,
 			CardLastFour: cardLastFour,
@@ -55,7 +54,8 @@ func (s *PaymentService) Authorize(ctx context.Context, req models.AuthorizePaym
 			return fmt.Errorf("create pending payment: %w", err)
 		}
 
-		zap.L().Info("created pending payment",
+		zap.L().Info(
+			"created pending payment",
 			zap.String("payment_ref", payment.Reference.String()),
 			zap.String("order_id", req.OrderID),
 			zap.Int64("amount", req.Amount),
@@ -73,13 +73,14 @@ func (s *PaymentService) Authorize(ctx context.Context, req models.AuthorizePaym
 		bankResult, bankErr := s.bankClient.Authorize(txCtx, bankReq)
 
 		if bankErr != nil {
-			zap.L().Error("bank authorization failed",
+			zap.L().Error(
+				"bank authorization failed",
 				zap.Error(bankErr),
 				zap.String("payment_ref", payment.Reference.String()),
 			)
 
-			if err := domain.ValidateTransition(domain.StatePending, domain.StateFailed); err != nil {
-				return fmt.Errorf("invalid state transition: %w", err)
+			if transErr := domain.ValidateTransition(domain.StatePending, domain.StateFailed); transErr != nil {
+				return fmt.Errorf("invalid state transition: %w", transErr)
 			}
 
 			_, err = s.repo.FailPayment(txCtx, payment.ID)
@@ -90,13 +91,14 @@ func (s *PaymentService) Authorize(ctx context.Context, req models.AuthorizePaym
 			return MapBankError(bankErr)
 		}
 
-		zap.L().Info("bank authorization succeeded",
+		zap.L().Info(
+			"bank authorization succeeded",
 			zap.String("payment_ref", payment.Reference.String()),
 			zap.String("bank_auth_id", bankResult.AuthorizationID),
 		)
 
-		if err := domain.ValidateTransition(domain.StatePending, domain.StateAuthorized); err != nil {
-			return fmt.Errorf("invalid state transition: %w", err)
+		if transErr := domain.ValidateTransition(domain.StatePending, domain.StateAuthorized); transErr != nil {
+			return fmt.Errorf("invalid state transition: %w", transErr)
 		}
 
 		authorizedPayment, err := s.repo.AuthorizePayment(txCtx, store.AuthorizePaymentParams{
@@ -107,7 +109,7 @@ func (s *PaymentService) Authorize(ctx context.Context, req models.AuthorizePaym
 			return fmt.Errorf("update payment to authorized: %w", err)
 		}
 
-		paymentResponse = buildPaymentResponse(authorizedPayment, bankResult.AuthorizationID)
+		paymentResponse = buildPaymentResponse(&authorizedPayment)
 		return nil
 	})
 
@@ -127,18 +129,19 @@ func extractLastFourDigits(cardNumber string) string {
 	return cleaned
 }
 
-func parseCardExpiry(expiry string) (int, int, error) {
+// parseCardExpiry parses card expiry in format MM/YYYY.
+func parseCardExpiry(expiry string) (month, year int, err error) {
 	parts := strings.Split(expiry, "/")
 	if len(parts) != 2 {
 		return 0, 0, fmt.Errorf("expected format MM/YYYY")
 	}
 
-	month, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	month, err = strconv.Atoi(strings.TrimSpace(parts[0]))
 	if err != nil || month < 1 || month > 12 {
 		return 0, 0, fmt.Errorf("invalid month")
 	}
 
-	year, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	year, err = strconv.Atoi(strings.TrimSpace(parts[1]))
 	if err != nil || year < 2000 || year > 2099 {
 		return 0, 0, fmt.Errorf("invalid year")
 	}
@@ -146,7 +149,8 @@ func parseCardExpiry(expiry string) (int, int, error) {
 	return month, year, nil
 }
 
-func buildPaymentResponse(payment store.Payment, bankAuthID string) *models.PaymentResponse {
+// buildPaymentResponse constructs the API response from database payment record.
+func buildPaymentResponse(payment *store.Payment) *models.PaymentResponse {
 	response := &models.PaymentResponse{
 		PaymentID:  fmt.Sprintf("%d", payment.ID),
 		Reference:  payment.Reference.String(),

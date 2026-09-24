@@ -9,47 +9,52 @@ import (
 )
 
 var (
-	cardNumberRegex = regexp.MustCompile(`^[0-9]{13,19}$`)
-	cvvRegex        = regexp.MustCompile(`^[0-9]{3,4}$`)
-	expiryRegex     = regexp.MustCompile(`^(0[1-9]|1[0-2])/[0-9]{4}$`)
+	cardNumberRegex = regexp.MustCompile(`^\d{13,19}$`)
+	cvvRegex        = regexp.MustCompile(`^\d{3,4}$`)
+	expiryRegex     = regexp.MustCompile(`^(0[1-9]|1[012])/\d{4}$`)
 	currencyRegex   = regexp.MustCompile(`^[A-Z]{3}$`)
 )
 
-// ValidateAuthorizationRequest validates all fields of an authorization request
-// before it touches the bank. Structural checks (format, Luhn) are done here
-// so invalid cards are rejected locally without a network round-trip.
-func ValidateAuthorizationRequest(req models.AuthorizePaymentRequest) error {
+// ValidateAuthorizationRequest validates the authorization request.
+func ValidateAuthorizationRequest(req *models.AuthorizePaymentRequest) error {
+	// Validate amount
 	if req.Amount <= 0 {
 		return fmt.Errorf("amount must be greater than 0")
 	}
 
+	// Validate currency (3-letter ISO code)
 	if !currencyRegex.MatchString(req.Currency) {
 		return fmt.Errorf("currency must be a 3-letter ISO code (e.g., USD)")
 	}
 
-	// Strip presentation formatting before digit-only checks.
+	// Validate card number (remove spaces/dashes first)
 	cleanCard := strings.ReplaceAll(req.CardNumber, " ", "")
 	cleanCard = strings.ReplaceAll(cleanCard, "-", "")
 	if !cardNumberRegex.MatchString(cleanCard) {
 		return fmt.Errorf("card number must be 13-19 digits")
 	}
 
+	// Validate Luhn algorithm for card number
 	if !luhnCheck(cleanCard) {
 		return fmt.Errorf("invalid card number (failed Luhn check)")
 	}
 
+	// Validate CVV
 	if !cvvRegex.MatchString(req.CardCVV) {
 		return fmt.Errorf("CVV must be 3-4 digits")
 	}
 
+	// Validate expiry format
 	if !expiryRegex.MatchString(req.CardExpiry) {
 		return fmt.Errorf("card expiry must be in format MM/YYYY")
 	}
 
+	// Validate order ID
 	if strings.TrimSpace(req.OrderID) == "" {
 		return fmt.Errorf("order_id is required")
 	}
 
+	// Validate customer ID
 	if strings.TrimSpace(req.CustomerID) == "" {
 		return fmt.Errorf("customer_id is required")
 	}
@@ -57,8 +62,7 @@ func ValidateAuthorizationRequest(req models.AuthorizePaymentRequest) error {
 	return nil
 }
 
-// luhnCheck returns true when cardNumber passes the Luhn checksum algorithm.
-// It expects a digit-only string (no spaces or dashes).
+// luhnCheck validates a card number using the Luhn algorithm.
 func luhnCheck(cardNumber string) bool {
 	var sum int
 	parity := len(cardNumber) % 2

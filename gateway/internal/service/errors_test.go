@@ -128,8 +128,8 @@ func TestMapBankError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := MapBankError(tt.bankErr)
 
-			var serviceErr *ServiceError
-			assert.True(t, errors.As(err, &serviceErr), "expected ServiceError")
+			var serviceErr *PaymentError
+			assert.True(t, errors.As(err, &serviceErr), "expected PaymentError")
 			assert.Equal(t, tt.wantStatusCode, serviceErr.StatusCode)
 			assert.Equal(t, tt.wantCode, serviceErr.Code)
 		})
@@ -139,12 +139,12 @@ func TestMapBankError(t *testing.T) {
 func TestServiceError_Error(t *testing.T) {
 	tests := []struct {
 		name    string
-		err     *ServiceError
+		err     *PaymentError
 		wantMsg string
 	}{
 		{
 			name: "with wrapped error",
-			err: &ServiceError{
+			err: &PaymentError{
 				StatusCode: 400,
 				Code:       "validation_error",
 				Message:    "Invalid input",
@@ -154,7 +154,7 @@ func TestServiceError_Error(t *testing.T) {
 		},
 		{
 			name: "without wrapped error",
-			err: &ServiceError{
+			err: &PaymentError{
 				StatusCode: 400,
 				Code:       "validation_error",
 				Message:    "Invalid input",
@@ -172,7 +172,7 @@ func TestServiceError_Error(t *testing.T) {
 
 func TestServiceError_Unwrap(t *testing.T) {
 	underlying := errors.New("underlying error")
-	err := &ServiceError{
+	err := &PaymentError{
 		StatusCode: 500,
 		Code:       "internal_error",
 		Message:    "Something went wrong",
