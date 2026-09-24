@@ -64,7 +64,7 @@ func run() error {
 
 	zap.L().Info("connected to database")
 
-	r := router.New(dbConn, router.Config{
+	r := router.New(dbConn, cfg, router.Config{
 		AllowedOrigins: cfg.Server.AllowedOrigins,
 		Environment:    cfg.AppEnv,
 	})
