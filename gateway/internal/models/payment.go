@@ -12,6 +12,11 @@ type AuthorizePaymentRequest struct {
 	CardNumber string `json:"card_number" binding:"required,min=13,max=19"`
 	CardExpiry string `json:"card_expiry" binding:"required"` // Format: MM/YYYY
 	CardCVV    string `json:"card_cvv" binding:"required,min=3,max=4"`
+
+	// BankIdempotencyKey is the client-supplied Idempotency-Key forwarded to
+	// the bank so it can apply its own deduplication. Set by the handler from
+	// the HTTP header; not part of the JSON body.
+	BankIdempotencyKey string `json:"-"`
 }
 
 type PaymentResponse struct {

@@ -20,7 +20,7 @@ import (
 // Authorize processes a payment authorization request.
 // The payment record is created before the bank call so a crash mid-flight
 // leaves a PENDING row that can be reconciled, rather than a lost transaction.
-func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePaymentRequest, idempotencyKey string) (*models.PaymentResponse, error) {
+func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePaymentRequest) (*models.PaymentResponse, error) {
 	if err := ValidateAuthorizationRequest(req); err != nil {
 		return nil, NewValidationError(err.Error())
 	}
@@ -62,7 +62,7 @@ func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePay
 		)
 
 		bankReq := bankclient.AuthorizeRequest{
-			IdempotencyKey: idempotencyKey,
+			IdempotencyKey: req.BankIdempotencyKey,
 			CardNumber:     req.CardNumber,
 			CVV:            req.CardCVV,
 			ExpiryMonth:    expiryMonth,

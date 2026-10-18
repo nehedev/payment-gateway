@@ -16,9 +16,6 @@ import (
 // AuthorizePayment handles POST /api/v1/payments/authorize
 // Implements the generated ServerInterface from OpenAPI
 func (s *Server) AuthorizePayment(c *gin.Context, params api.AuthorizePaymentParams) {
-	// Extract idempotency key from params (already validated by generated code)
-	idempotencyKey := params.IdempotencyKey
-
 	// Bind request body to generated API model
 	var apiReq api.AuthorizePaymentRequest
 	if err := c.ShouldBindJSON(&apiReq); err != nil {
@@ -36,18 +33,21 @@ func (s *Server) AuthorizePayment(c *gin.Context, params api.AuthorizePaymentPar
 
 	// Convert API request to internal service model
 	req := &models.AuthorizePaymentRequest{
-		OrderID:    apiReq.OrderId,
-		CustomerID: apiReq.CustomerId,
-		Amount:     apiReq.Amount,
-		Currency:   apiReq.Currency,
-		CardNumber: apiReq.CardNumber,
-		CardExpiry: apiReq.CardExpiry,
-		CardCVV:    apiReq.CardCvv,
+		OrderID:            apiReq.OrderId,
+		CustomerID:         apiReq.CustomerId,
+		Amount:             apiReq.Amount,
+		Currency:           apiReq.Currency,
+		CardNumber:         apiReq.CardNumber,
+		CardExpiry:         apiReq.CardExpiry,
+		CardCVV:            apiReq.CardCvv,
+		// Forward the idempotency key to the bank so it can deduplicate on its
+		// side. Replay decisions at the gateway level are owned by the middleware.
+		BankIdempotencyKey: params.IdempotencyKey,
 	}
 
 	// Call service layer
 	ctx := c.Request.Context()
-	payment, err := s.paymentService.Authorize(ctx, req, idempotencyKey)
+	payment, err := s.paymentService.Authorize(ctx, req)
 	if err != nil {
 		handleServiceError(c, err)
 		return
