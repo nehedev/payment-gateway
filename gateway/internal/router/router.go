@@ -40,7 +40,7 @@ func New(db *database.DB, appConfig *config.Config, cfg Config) *gin.Engine {
 
 	// Initialize repositories
 	paymentRepo := repository.NewRepository(db.Pool())
-	idempotencyRepo := repository.NewIdempotencyRepository(db)
+	idempotencyRepo := repository.NewIdempotencyRepository(db.Pool())
 
 	// Initialize bank client from provided config
 	bankClient := bankclient.NewClient(bankclient.Config{
