@@ -62,13 +62,17 @@ func New(db *database.DB, appConfig *config.Config, cfg Config) *gin.Engine {
 		api.RegisterDocsRoutes(r)
 	}
 
+	// Wire the idempotency middleware into the generated server so it runs
+	// for every route registered by RegisterHandlersWithOptions, before the
+	// handler is invoked. The middleware itself already guards on HTTP method,
+	// so safe read-only routes (GET /health) are left untouched.
+	idempotencyMW := api.MiddlewareFunc(middleware.Idempotency(idempotencyRepo))
+
 	// API routes - use generated OpenAPI router registration
 	// This registers: POST /api/v1/payments/authorize and GET /health
-	api.RegisterHandlers(r, srv)
-
-	// Apply idempotency middleware specifically to payment routes
-	payments := r.Group("/api/v1/payments")
-	payments.Use(middleware.Idempotency(idempotencyRepo))
+	api.RegisterHandlersWithOptions(r, srv, api.GinServerOptions{
+		Middlewares: []api.MiddlewareFunc{idempotencyMW},
+	})
 
 	return r
 }
