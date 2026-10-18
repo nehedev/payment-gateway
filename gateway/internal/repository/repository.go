@@ -77,15 +77,21 @@ type IdempotencyRecord struct {
 	RequestHash  string
 	ResponseCode int
 	ResponseBody json.RawMessage
+	// Status is "in_progress" while the owning request is being processed,
+	// "complete" once the response has been cached.
+	Status string
 }
 
 // IdempotencyRepository defines the contract used by the idempotency middleware.
 type IdempotencyRepository interface {
 	// Get returns the cached record for (key, path), or nil if none exists.
 	Get(ctx context.Context, key, requestPath string) (*IdempotencyRecord, error)
-	// Store persists a new record. Concurrent duplicate inserts are safe
-	// (enforced by the UNIQUE constraint at the DB level).
-	Store(ctx context.Context, record *IdempotencyRecord) error
+	// Reserve atomically inserts an in_progress slot for (key, path, hash).
+	// Returns (record, nil) if this caller won the race and owns the slot.
+	// Returns (nil, nil) if another request already holds the slot (conflict).
+	Reserve(ctx context.Context, key, requestPath, requestHash string) (*IdempotencyRecord, error)
+	// Finalize updates an in_progress record with the final response.
+	Finalize(ctx context.Context, key, requestPath string, statusCode int, body json.RawMessage) error
 }
 
 // NewIdempotencyRepository returns an IdempotencyRepository backed by the
@@ -109,32 +115,51 @@ func (r *idempotencyRepository) Get(ctx context.Context, key, requestPath string
 		}
 		return nil, err
 	}
+	rec := &IdempotencyRecord{
+		ID:          row.ID,
+		Key:         row.Key,
+		RequestPath: row.RequestPath,
+		RequestHash: row.RequestHash,
+		Status:      row.Status,
+	}
+	if row.ResponseCode.Valid {
+		rec.ResponseCode = int(row.ResponseCode.Int32)
+	}
+	if row.ResponseBody != nil {
+		rec.ResponseBody = row.ResponseBody
+	}
+	return rec, nil
+}
+
+func (r *idempotencyRepository) Reserve(ctx context.Context, key, requestPath, requestHash string) (*IdempotencyRecord, error) {
+	row, err := r.queries.ReserveIdempotencyKey(ctx, store.ReserveIdempotencyKeyParams{
+		Key:         key,
+		RequestPath: requestPath,
+		RequestHash: requestHash,
+	})
+	if err != nil {
+		// ON CONFLICT DO NOTHING with a :one query returns pgx.ErrNoRows when
+		// the INSERT was suppressed — another request holds the slot.
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
 	return &IdempotencyRecord{
-		ID:           row.ID,
-		Key:          row.Key,
-		RequestPath:  row.RequestPath,
-		RequestHash:  row.RequestHash,
-		ResponseCode: int(row.ResponseCode),
-		ResponseBody: row.ResponseBody,
+		ID:          row.ID,
+		Key:         row.Key,
+		RequestPath: row.RequestPath,
+		RequestHash: row.RequestHash,
+		Status:      row.Status,
 	}, nil
 }
 
-func (r *idempotencyRepository) Store(ctx context.Context, record *IdempotencyRecord) error {
-	_, err := r.queries.InsertIdempotencyKey(ctx, store.InsertIdempotencyKeyParams{
-		Key:          record.Key,
-		RequestPath:  record.RequestPath,
-		RequestHash:  record.RequestHash,
-		ResponseCode: int32(record.ResponseCode),
-		ResponseBody: record.ResponseBody,
+func (r *idempotencyRepository) Finalize(ctx context.Context, key, requestPath string, statusCode int, body json.RawMessage) error {
+	_, err := r.queries.FinalizeIdempotencyKey(ctx, store.FinalizeIdempotencyKeyParams{
+		Key:          key,
+		RequestPath:  requestPath,
+		ResponseCode: int32(statusCode),
+		ResponseBody: body,
 	})
-	// pgx surfaces a unique-constraint violation as a *pgconn.PgError with
-	// code "23505". Treat it as a no-op: the record already exists, which is
-	// the desired final state (ON CONFLICT DO NOTHING semantics).
-	if err != nil {
-		if isUniqueViolation(err) {
-			return nil
-		}
-		return err
-	}
-	return nil
+	return err
 }

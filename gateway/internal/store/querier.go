@@ -15,13 +15,14 @@ type Querier interface {
 	CapturePayment(ctx context.Context, arg CapturePaymentParams) (Payment, error)
 	CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error)
 	FailPayment(ctx context.Context, id int64) (Payment, error)
+	FinalizeIdempotencyKey(ctx context.Context, arg FinalizeIdempotencyKeyParams) (IdempotencyKey, error)
 	GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error)
 	GetPaymentByID(ctx context.Context, id int64) (Payment, error)
 	GetPaymentByReference(ctx context.Context, reference uuid.UUID) (Payment, error)
-	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (IdempotencyKey, error)
 	ListPaymentsByCustomer(ctx context.Context, arg ListPaymentsByCustomerParams) ([]Payment, error)
 	ListPaymentsByOrder(ctx context.Context, orderID string) ([]Payment, error)
 	RefundPayment(ctx context.Context, arg RefundPaymentParams) (Payment, error)
+	ReserveIdempotencyKey(ctx context.Context, arg ReserveIdempotencyKeyParams) (IdempotencyKey, error)
 	VoidPayment(ctx context.Context, arg VoidPaymentParams) (Payment, error)
 }
 

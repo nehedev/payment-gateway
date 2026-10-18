@@ -9,10 +9,27 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// IdempotencyKey mirrors the idempotency_keys table. response_code and
+// response_body are nullable because they are unknown while status='in_progress'.
+type IdempotencyKey struct {
+	ID           int64           `json:"id"`
+	Key          string          `json:"key"`
+	RequestPath  string          `json:"request_path"`
+	RequestHash  string          `json:"request_hash"`
+	ResponseCode pgtype.Int4     `json:"response_code"`
+	ResponseBody json.RawMessage `json:"response_body"`
+	Status       string          `json:"status"`
+	CreatedAt    time.Time       `json:"created_at"`
+}
+
+// --- GetIdempotencyKey ---
+
 const getIdempotencyKey = `-- name: GetIdempotencyKey :one
-SELECT id, key, request_path, request_hash, response_code, response_body, created_at
+SELECT id, key, request_path, request_hash, response_code, response_body, status, created_at
 FROM idempotency_keys
 WHERE key = $1 AND request_path = $2
 `
@@ -20,16 +37,6 @@ WHERE key = $1 AND request_path = $2
 type GetIdempotencyKeyParams struct {
 	Key         string `json:"key"`
 	RequestPath string `json:"request_path"`
-}
-
-type IdempotencyKey struct {
-	ID           int64           `json:"id"`
-	Key          string          `json:"key"`
-	RequestPath  string          `json:"request_path"`
-	RequestHash  string          `json:"request_hash"`
-	ResponseCode int32           `json:"response_code"`
-	ResponseBody json.RawMessage `json:"response_body"`
-	CreatedAt    time.Time       `json:"created_at"`
 }
 
 func (q *Queries) GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error) {
@@ -42,30 +49,65 @@ func (q *Queries) GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyPa
 		&i.RequestHash,
 		&i.ResponseCode,
 		&i.ResponseBody,
+		&i.Status,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
-const insertIdempotencyKey = `-- name: InsertIdempotencyKey :one
-INSERT INTO idempotency_keys (key, request_path, request_hash, response_code, response_body)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, key, request_path, request_hash, response_code, response_body, created_at
+// --- ReserveIdempotencyKey ---
+
+const reserveIdempotencyKey = `-- name: ReserveIdempotencyKey :one
+INSERT INTO idempotency_keys (key, request_path, request_hash, status)
+VALUES ($1, $2, $3, 'in_progress')
+ON CONFLICT (key, request_path) DO NOTHING
+RETURNING id, key, request_path, request_hash, response_code, response_body, status, created_at
 `
 
-type InsertIdempotencyKeyParams struct {
+type ReserveIdempotencyKeyParams struct {
+	Key         string `json:"key"`
+	RequestPath string `json:"request_path"`
+	RequestHash string `json:"request_hash"`
+}
+
+func (q *Queries) ReserveIdempotencyKey(ctx context.Context, arg ReserveIdempotencyKeyParams) (IdempotencyKey, error) {
+	row := q.db.QueryRow(ctx, reserveIdempotencyKey, arg.Key, arg.RequestPath, arg.RequestHash)
+	var i IdempotencyKey
+	err := row.Scan(
+		&i.ID,
+		&i.Key,
+		&i.RequestPath,
+		&i.RequestHash,
+		&i.ResponseCode,
+		&i.ResponseBody,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+// --- FinalizeIdempotencyKey ---
+
+const finalizeIdempotencyKey = `-- name: FinalizeIdempotencyKey :one
+UPDATE idempotency_keys
+SET status        = 'complete',
+    response_code = $3,
+    response_body = $4
+WHERE key = $1 AND request_path = $2
+RETURNING id, key, request_path, request_hash, response_code, response_body, status, created_at
+`
+
+type FinalizeIdempotencyKeyParams struct {
 	Key          string          `json:"key"`
 	RequestPath  string          `json:"request_path"`
-	RequestHash  string          `json:"request_hash"`
 	ResponseCode int32           `json:"response_code"`
 	ResponseBody json.RawMessage `json:"response_body"`
 }
 
-func (q *Queries) InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (IdempotencyKey, error) {
-	row := q.db.QueryRow(ctx, insertIdempotencyKey,
+func (q *Queries) FinalizeIdempotencyKey(ctx context.Context, arg FinalizeIdempotencyKeyParams) (IdempotencyKey, error) {
+	row := q.db.QueryRow(ctx, finalizeIdempotencyKey,
 		arg.Key,
 		arg.RequestPath,
-		arg.RequestHash,
 		arg.ResponseCode,
 		arg.ResponseBody,
 	)
@@ -77,6 +119,7 @@ func (q *Queries) InsertIdempotencyKey(ctx context.Context, arg InsertIdempotenc
 		&i.RequestHash,
 		&i.ResponseCode,
 		&i.ResponseBody,
+		&i.Status,
 		&i.CreatedAt,
 	)
 	return i, err

@@ -17,6 +17,9 @@ import (
 const (
 	IdempotencyKeyHeader = "Idempotency-Key"
 	ReplayedHeader       = "X-Idempotent-Replayed"
+
+	statusInProgress = "in_progress"
+	statusComplete   = "complete"
 )
 
 // responseRecorder wraps gin.ResponseWriter to capture response data
@@ -37,10 +40,21 @@ func (r *responseRecorder) WriteHeader(statusCode int) {
 }
 
 // Idempotency middleware enforces idempotent semantics on write operations.
-// For a given (Idempotency-Key, path) pair it returns the original cached
-// response on replay rather than re-processing the request. Keys are scoped
-// to the request path so the same UUID cannot accidentally replay across
-// different endpoints.
+//
+// For a given (Idempotency-Key, path) pair the middleware guarantees:
+//   - Missing key            → 400
+//   - Same key + diff body   → 409 Conflict
+//   - Same key + same body   → cached response + X-Idempotent-Replayed: true
+//   - Concurrent duplicate   → 409 (second request loses the Reserve race)
+//
+// Lifecycle of a slot:
+//  1. Reserve: INSERT ... ON CONFLICT DO NOTHING — winner gets the row,
+//     loser gets nil (returns 409 immediately).
+//  2. Process: downstream handler runs normally inside the winner.
+//  3. Finalize: UPDATE the row with the response (status → complete).
+//
+// Keys are scoped to the request path so the same UUID cannot accidentally
+// replay across different endpoints.
 func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method != http.MethodPost &&
@@ -90,6 +104,8 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 		requestHash := hex.EncodeToString(hash[:])
 
 		ctx := c.Request.Context()
+
+		// Check for an existing record first (replay or in-progress).
 		existing, err := repo.Get(ctx, idempotencyKey, requestPath)
 		if err != nil {
 			zap.L().Error(
@@ -98,9 +114,11 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 				zap.String("idempotency_key", idempotencyKey),
 				zap.String("path", requestPath),
 			)
-			// Don't block the request on a store read failure — idempotency
-			// is a best-effort safety net, not a hard dependency.
-			c.Next()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "internal_error",
+				"message": "Failed to process request",
+			})
+			c.Abort()
 			return
 		}
 
@@ -120,8 +138,23 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 				return
 			}
 
-			c.Header(ReplayedHeader, "true")
+			if existing.Status == statusInProgress {
+				// Another request is already processing this key — tell the
+				// caller to back off and retry once the original finishes.
+				zap.L().Warn(
+					"idempotency key already in progress",
+					zap.String("idempotency_key", idempotencyKey),
+					zap.String("path", requestPath),
+				)
+				c.JSON(http.StatusConflict, gin.H{
+					"error":   "idempotency_key_in_progress",
+					"message": "A request with this Idempotency-Key is already being processed",
+				})
+				c.Abort()
+				return
+			}
 
+			// Status is complete — replay the cached response.
 			var responseBody interface{}
 			if err := json.Unmarshal(existing.ResponseBody, &responseBody); err != nil {
 				zap.L().Error(
@@ -144,11 +177,47 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 				zap.Int("status_code", existing.ResponseCode),
 			)
 
+			c.Header(ReplayedHeader, "true")
 			c.JSON(existing.ResponseCode, responseBody)
 			c.Abort()
 			return
 		}
 
+		// No existing record — atomically claim the slot before processing.
+		// If Reserve returns nil the unique constraint was hit: a concurrent
+		// request already owns this slot.
+		reserved, err := repo.Reserve(ctx, idempotencyKey, requestPath, requestHash)
+		if err != nil {
+			zap.L().Error(
+				"failed to reserve idempotency slot",
+				zap.Error(err),
+				zap.String("idempotency_key", idempotencyKey),
+				zap.String("path", requestPath),
+			)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "internal_error",
+				"message": "Failed to process request",
+			})
+			c.Abort()
+			return
+		}
+
+		if reserved == nil {
+			// Lost the reserve race — another goroutine/process beat us.
+			zap.L().Warn(
+				"idempotency reserve conflict",
+				zap.String("idempotency_key", idempotencyKey),
+				zap.String("path", requestPath),
+			)
+			c.JSON(http.StatusConflict, gin.H{
+				"error":   "idempotency_key_in_progress",
+				"message": "A request with this Idempotency-Key is already being processed",
+			})
+			c.Abort()
+			return
+		}
+
+		// We own the slot — wrap the writer to capture the response.
 		recorder := &responseRecorder{
 			ResponseWriter: c.Writer,
 			body:           bytes.NewBuffer(nil),
@@ -158,27 +227,23 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 
 		c.Next()
 
-		// Only cache successful responses; errors are not idempotent by design.
+		// Finalize: persist the response so future requests can replay it.
+		// Only cache successful responses; errors are not idempotent by design
+		// (a retry after a 5xx should be allowed to re-attempt processing).
 		if recorder.statusCode >= 200 && recorder.statusCode < 300 {
-			record := &repository.IdempotencyRecord{
-				Key:          idempotencyKey,
-				RequestPath:  requestPath,
-				RequestHash:  requestHash,
-				ResponseCode: recorder.statusCode,
-				ResponseBody: json.RawMessage(recorder.body.Bytes()),
-			}
-
-			if err := repo.Store(ctx, record); err != nil {
-				// Log but don't fail — the response has already been sent.
+			if err := repo.Finalize(ctx, idempotencyKey, requestPath, recorder.statusCode, json.RawMessage(recorder.body.Bytes())); err != nil {
+				// Log but don't fail — the response has already been sent and
+				// the client received a success. The in_progress slot will stay
+				// and subsequent retries will receive a 409 until cleaned up.
 				zap.L().Error(
-					"failed to store idempotency record",
+					"failed to finalize idempotency record",
 					zap.Error(err),
 					zap.String("idempotency_key", idempotencyKey),
 					zap.String("path", requestPath),
 				)
 			} else {
 				zap.L().Debug(
-					"stored idempotency record",
+					"finalized idempotency record",
 					zap.String("idempotency_key", idempotencyKey),
 					zap.String("path", requestPath),
 					zap.Int("status_code", recorder.statusCode),
