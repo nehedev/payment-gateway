@@ -131,6 +131,9 @@ type PaymentResponse struct {
 	// BankRefundId Bank refund ID (present when state is refunded)
 	BankRefundId string `json:"bank_refund_id,omitempty,omitzero"`
 
+	// BankVoidId Bank void ID (present when state is voided)
+	BankVoidId string `json:"bank_void_id,omitempty,omitzero"`
+
 	// CapturedAt Timestamp when payment was captured (present when state is captured)
 	CapturedAt time.Time `json:"captured_at,omitempty,omitzero"`
 
@@ -163,6 +166,9 @@ type PaymentResponse struct {
 	// - refunded: Captured payment refunded
 	// - failed: Authorization or other operation failed
 	State PaymentState `json:"state"`
+
+	// VoidedAt Timestamp when payment was voided (present when state is voided)
+	VoidedAt time.Time `json:"voided_at,omitempty,omitzero"`
 }
 
 // PaymentState Payment lifecycle state:
@@ -198,6 +204,12 @@ type RefundPaymentParams struct {
 	IdempotencyKey string `json:"Idempotency-Key"`
 }
 
+// VoidPaymentParams defines parameters for VoidPayment.
+type VoidPaymentParams struct {
+	// IdempotencyKey Unique key to ensure idempotent processing (max 255 chars)
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
 // AuthorizePaymentJSONRequestBody defines body for AuthorizePayment for application/json ContentType.
 type AuthorizePaymentJSONRequestBody = AuthorizePaymentRequest
 
@@ -218,6 +230,9 @@ type ServerInterface interface {
 	// RefundPayment Refund a captured payment
 	// (POST /api/v1/payments/{reference}/refund)
 	RefundPayment(c *gin.Context, reference openapi_types.UUID, params RefundPaymentParams)
+	// VoidPayment Void an authorized payment
+	// (POST /api/v1/payments/{reference}/void)
+	VoidPayment(c *gin.Context, reference openapi_types.UUID, params VoidPaymentParams)
 
 	// (GET /health)
 	GetHealth(c *gin.Context)
@@ -379,6 +394,58 @@ func (siw *ServerInterfaceWrapper) RefundPayment(c *gin.Context) {
 	siw.Handler.RefundPayment(c, reference, params)
 }
 
+// VoidPayment operation middleware
+func (siw *ServerInterfaceWrapper) VoidPayment(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "reference" -------------
+	var reference openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "reference", c.Param("reference"), &reference, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter reference: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params VoidPaymentParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for Idempotency-Key, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter Idempotency-Key: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.IdempotencyKey = IdempotencyKey
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter Idempotency-Key is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.VoidPayment(c, reference, params)
+}
+
 // GetHealth operation middleware
 func (siw *ServerInterfaceWrapper) GetHealth(c *gin.Context) {
 
@@ -422,6 +489,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/payments/authorize", wrapper.AuthorizePayment)
 	router.POST(options.BaseURL+"/api/v1/payments/:reference/capture", wrapper.CapturePayment)
 	router.POST(options.BaseURL+"/api/v1/payments/:reference/refund", wrapper.RefundPayment)
+	router.POST(options.BaseURL+"/api/v1/payments/:reference/void", wrapper.VoidPayment)
 	router.GET(options.BaseURL+"/health", wrapper.GetHealth)
 }
 
@@ -730,6 +798,107 @@ func (response RefundPayment503JSONResponse) VisitRefundPaymentResponse(w http.R
 	return err
 }
 
+type VoidPaymentRequestObject struct {
+	Reference openapi_types.UUID `json:"reference"`
+	Params    VoidPaymentParams
+}
+
+type VoidPaymentResponseObject interface {
+	VisitVoidPaymentResponse(w http.ResponseWriter) error
+}
+
+type VoidPayment200ResponseHeaders struct {
+	XIdempotentReplayed string
+}
+
+type VoidPayment200JSONResponse struct {
+	Body    PaymentResponse
+	Headers VoidPayment200ResponseHeaders
+}
+
+func (response VoidPayment200JSONResponse) VisitVoidPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Idempotent-Replayed", fmt.Sprint(response.Headers.XIdempotentReplayed))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type VoidPayment400JSONResponse ErrorResponse
+
+func (response VoidPayment400JSONResponse) VisitVoidPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type VoidPayment404JSONResponse ErrorResponse
+
+func (response VoidPayment404JSONResponse) VisitVoidPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type VoidPayment409JSONResponse ErrorResponse
+
+func (response VoidPayment409JSONResponse) VisitVoidPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type VoidPayment500JSONResponse ErrorResponse
+
+func (response VoidPayment500JSONResponse) VisitVoidPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type VoidPayment503JSONResponse ErrorResponse
+
+func (response VoidPayment503JSONResponse) VisitVoidPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetHealthRequestObject struct {
 }
 
@@ -776,6 +945,9 @@ type StrictServerInterface interface {
 	// RefundPayment Refund a captured payment
 	// (POST /api/v1/payments/{reference}/refund)
 	RefundPayment(ctx context.Context, request RefundPaymentRequestObject) (RefundPaymentResponseObject, error)
+	// VoidPayment Void an authorized payment
+	// (POST /api/v1/payments/{reference}/void)
+	VoidPayment(ctx context.Context, request VoidPaymentRequestObject) (VoidPaymentResponseObject, error)
 
 	// (GET /health)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
@@ -932,6 +1104,33 @@ func (sh *strictHandler) RefundPayment(ctx *gin.Context, reference openapi_types
 		sh.options.HandlerErrorFunc(ctx, err)
 	} else if validResponse, ok := response.(RefundPaymentResponseObject); ok {
 		if err := validResponse.VisitRefundPaymentResponse(ctx.Writer); err != nil {
+			sh.options.ResponseErrorHandlerFunc(ctx, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(ctx, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// VoidPayment operation middleware
+func (sh *strictHandler) VoidPayment(ctx *gin.Context, reference openapi_types.UUID, params VoidPaymentParams) {
+	var request VoidPaymentRequestObject
+
+	request.Reference = reference
+	request.Params = params
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.VoidPayment(ctx, request.(VoidPaymentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "VoidPayment")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		sh.options.HandlerErrorFunc(ctx, err)
+	} else if validResponse, ok := response.(VoidPaymentResponseObject); ok {
+		if err := validResponse.VisitVoidPaymentResponse(ctx.Writer); err != nil {
 			sh.options.ResponseErrorHandlerFunc(ctx, err)
 		}
 	} else if response != nil {

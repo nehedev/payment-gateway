@@ -48,6 +48,14 @@ func (s *coordinates) RefundPayment(c *gin.Context, _ openapi_types.UUID, _ api.
 	c.Status(http.StatusOK)
 }
 
+func (s *coordinates) VoidPayment(c *gin.Context, _ openapi_types.UUID, _ api.VoidPaymentParams) {
+	s.calls++
+	s.key = c.GetString(middleware.CtxIdempotencyKey)
+	s.path = c.GetString(middleware.CtxIdempotencyPath)
+	s.bodyHash = c.GetString(middleware.CtxIdempotencyBodyHash)
+	c.Status(http.StatusOK)
+}
+
 func (s *coordinates) GetHealth(c *gin.Context) {
 	c.Status(http.StatusOK)
 }

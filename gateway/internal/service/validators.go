@@ -98,6 +98,17 @@ func ValidateRefundRequest(req *models.RefundPaymentRequest) error {
 	return nil
 }
 
+// ValidateVoidRequest validates the void request. The void is full-amount by
+// definition; the authorization ID is taken from the stored payment row.
+func ValidateVoidRequest(req *models.VoidPaymentRequest) error {
+	// Validate reference — it routes to the stored payment row.
+	if _, err := uuid.Parse(req.Reference); err != nil {
+		return fmt.Errorf("payment reference must be a valid UUID")
+	}
+
+	return nil
+}
+
 // luhnCheck validates a card number using the Luhn algorithm.
 func luhnCheck(cardNumber string) bool {
 	var sum int

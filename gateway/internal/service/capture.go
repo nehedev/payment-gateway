@@ -206,8 +206,9 @@ func captureStateCheck(req *models.CapturePaymentRequest, payment *store.Payment
 }
 
 // authUnusable reports whether a definitive bank decline means the underlying
-// authorization can no longer be used — the payment must move to failed — as
-// opposed to a client-fixable defect (amount mismatch) that leaves the
+// authorization can no longer be used — the payment must move to failed from
+// its currently stored hold state (pending/authorized; money has not moved) —
+// as opposed to a client-fixable defect (amount mismatch) that leaves the
 // authorization intact for a retry with a fresh key.
 func authUnusable(bankErr error) bool {
 	var bankResp *bankclient.Error
@@ -219,7 +220,8 @@ func authUnusable(bankErr error) bool {
 	case bankclient.ErrorAuthorizationNotFound,
 		bankclient.ErrorAuthorizationExpired,
 		bankclient.ErrorAuthorizationAlreadyUsed,
-		bankclient.ErrorAlreadyCaptured:
+		bankclient.ErrorAlreadyCaptured,
+		bankclient.ErrorAlreadyVoided:
 		return true
 	default:
 		return false

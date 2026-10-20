@@ -49,6 +49,27 @@ type CapturePaymentRequest struct {
 	GatewayIdempotencyBodyHash string `json:"-"`
 }
 
+// VoidPaymentRequest voids a previously authorized payment before capture.
+type VoidPaymentRequest struct {
+	// Reference is the payment reference (UUID) returned by the authorize
+	// call; taken from the request path, not the JSON body.
+	//
+	// There is no amount: the bank voids the full authorized hold, and the
+	// authorization ID sent to the bank is taken from the stored payment row.
+	Reference string
+
+	// BankIdempotencyKey is the client-supplied Idempotency-Key forwarded to
+	// the bank so it can apply its own deduplication on the void. Not part
+	// of the JSON body.
+	BankIdempotencyKey string `json:"-"`
+
+	// Gateway-scoped idempotency coordinates — same contract as the authorize
+	// request. Not part of the JSON body.
+	GatewayIdempotencyKey      string `json:"-"`
+	GatewayIdempotencyPath     string `json:"-"`
+	GatewayIdempotencyBodyHash string `json:"-"`
+}
+
 type PaymentResponse struct {
 	PaymentID     string     `json:"payment_id"`
 	Reference     string     `json:"reference"`
@@ -60,10 +81,12 @@ type PaymentResponse struct {
 	BankAuthID    *string    `json:"bank_auth_id,omitempty"`
 	BankCaptureID *string    `json:"bank_capture_id,omitempty"`
 	BankRefundID  *string    `json:"bank_refund_id,omitempty"`
+	BankVoidID    *string    `json:"bank_void_id,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	AuthorizedAt  *time.Time `json:"authorized_at,omitempty"`
 	CapturedAt    *time.Time `json:"captured_at,omitempty"`
 	RefundedAt    *time.Time `json:"refunded_at,omitempty"`
+	VoidedAt      *time.Time `json:"voided_at,omitempty"`
 }
 
 // RefundPaymentRequest refunds a previously captured payment.

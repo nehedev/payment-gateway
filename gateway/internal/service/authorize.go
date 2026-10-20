@@ -285,6 +285,11 @@ func buildPaymentResponse(payment *store.Payment) models.PaymentResponse {
 		response.BankRefundID = &refundID
 	}
 
+	if payment.VoidID.Valid && payment.VoidID.String != "" {
+		voidID := payment.VoidID.String
+		response.BankVoidID = &voidID
+	}
+
 	if payment.PaymentState == string(domain.StateAuthorized) {
 		response.AuthorizedAt = &payment.UpdatedAt
 	}
@@ -295,6 +300,10 @@ func buildPaymentResponse(payment *store.Payment) models.PaymentResponse {
 
 	if payment.PaymentState == string(domain.StateRefunded) {
 		response.RefundedAt = &payment.UpdatedAt
+	}
+
+	if payment.PaymentState == string(domain.StateVoided) {
+		response.VoidedAt = &payment.UpdatedAt
 	}
 
 	return response

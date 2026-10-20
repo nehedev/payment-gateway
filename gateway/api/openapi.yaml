@@ -243,6 +243,80 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/payments/{reference}/void:
+    post:
+      operationId: voidPayment
+      summary: Void an authorized payment
+      description: |
+        Cancels a previously authorized payment before capture, releasing the
+        hold on the customer's card. The full authorized amount is voided;
+        partial voids are not supported. This operation requires an
+        Idempotency-Key header to prevent duplicate cancellations. The
+        payment must be in AUTHORIZED state and transitions to VOIDED upon
+        success.
+      tags: [Payments]
+      parameters:
+        - name: reference
+          in: path
+          required: true
+          description: Unique payment reference (UUID) returned by the authorize call
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Unique key to ensure idempotent processing (max 255 chars)
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      responses:
+        '200':
+          description: Payment voided successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+          headers:
+            X-Idempotent-Replayed:
+              description: Present with value "true" if this is a replayed cached response
+              schema:
+                type: string
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Payment not found with the given reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Conflict - either the payment is not in a voidable state, or the
+            bank reports the underlying authorization as no longer usable
+            (not found, expired, already used, already voided or captured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Bank service temporarily unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /health:
     get:
       operationId: getHealth
@@ -392,6 +466,10 @@ components:
           type: string
           description: Bank refund ID (present when state is refunded)
           example: "ref_550e8400-e29b-41d4-a716-446655440002"
+        bank_void_id:
+          type: string
+          description: Bank void ID (present when state is voided)
+          example: "void_550e8400-e29b-41d4-a716-446655440003"
         created_at:
           type: string
           format: date-time
@@ -412,6 +490,11 @@ components:
           format: date-time
           description: Timestamp when payment was refunded (present when state is refunded)
           example: "2026-09-24T12:36:00Z"
+        voided_at:
+          type: string
+          format: date-time
+          description: Timestamp when payment was voided (present when state is voided)
+          example: "2026-09-24T12:36:30Z"
 
     PaymentState:
       type: string
