@@ -40,7 +40,6 @@ func New(db *database.DB, appConfig *config.Config, cfg Config) *gin.Engine {
 
 	// Initialize repositories
 	paymentRepo := repository.NewRepository(db.Pool())
-	idempotencyRepo := repository.NewIdempotencyRepository(db.Pool())
 
 	// Initialize bank client from provided config
 	bankClient := bankclient.NewClient(bankclient.Config{
@@ -64,13 +63,16 @@ func New(db *database.DB, appConfig *config.Config, cfg Config) *gin.Engine {
 
 	// API routes - use generated OpenAPI router registration
 	// This registers: POST /api/v1/payments/authorize and GET /health
-	registerAPIHandlers(r, srv, idempotencyRepo)
+	registerAPIHandlers(r, srv)
 
 	return r
 }
 
-func registerAPIHandlers(r gin.IRouter, srv api.ServerInterface, idempotencyRepo repository.IdempotencyRepository) {
+func registerAPIHandlers(r gin.IRouter, srv api.ServerInterface) {
 	apiRoutes := r.Group("")
-	apiRoutes.Use(middleware.Idempotency(idempotencyRepo))
+	// The middleware only validates/stamps the idempotency coordinates; the
+	// payment service owns the record and writes it in the payment
+	// transaction.
+	apiRoutes.Use(middleware.Idempotency())
 	api.RegisterHandlers(apiRoutes, srv)
 }

@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -14,13 +16,27 @@ import (
 	"github.com/nehemiah-dev/payment-gateway/internal/database"
 	"github.com/nehemiah-dev/payment-gateway/internal/domain"
 	"github.com/nehemiah-dev/payment-gateway/internal/models"
+	"github.com/nehemiah-dev/payment-gateway/internal/repository"
 	"github.com/nehemiah-dev/payment-gateway/internal/store"
 )
 
-// Authorize processes a payment authorization request.
+// Authorize processes a payment authorization request and owns the idempotency
+// ledger write. Every statement the request produces runs on ONE transaction —
+// the payment row AND the idempotency record — so exactly one of these
+// outcomes commits:
+//
+//	success  → payment = authorized, key = complete  → replayable 200
+//	declined → payment = failed,     key = complete  → replayable mapped 4xx
+//	unknown  → everything rolls back (the payment row and the reserved key
+//	           disappear) → the client may safely retry with the same key
+//
+// Because the ledger commits with the payment, any error above 2xx is
+// unambiguous: either a definitive committed result that replays on retry, or
+// a clean rollback that invites a retry.
+//
 // The payment record is created before the bank call so a crash mid-flight
 // leaves a PENDING row that can be reconciled, rather than a lost transaction.
-func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePaymentRequest) (*models.PaymentResponse, error) {
+func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePaymentRequest) (*AuthorizeResult, error) {
 	if err := ValidateAuthorizationRequest(req); err != nil {
 		return nil, NewValidationError(err.Error())
 	}
@@ -37,12 +53,27 @@ func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePay
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 
-	var paymentResponse *models.PaymentResponse
+	var result *AuthorizeResult
 
-	txErr := s.db.WithTx(ctx, func(txCtx context.Context, _ database.Querier) error {
-		// Insert the PENDING record before touching the bank so the row exists
-		// even if the process crashes after the bank responds.
-		payment, err := s.repo.CreatePayment(txCtx, &store.CreatePaymentParams{
+	txErr := s.db.WithTx(ctx, func(txCtx context.Context, txQ database.Querier) error {
+		// Repo bound to THIS transaction (not the pool) — a rollback must
+		// really discard the payment row and the idempotency reservation.
+		repo := repository.NewTxRepository(txQ)
+
+		// 1) Reserve the (key, path) slot on this transaction.
+		replay, err := claimIdempotency(txCtx, repo, req)
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			// The slot is claimed by a committed record — nothing to commit.
+			result = replay
+			return nil
+		}
+
+		// 2) Insert the PENDING record before touching the bank so the row
+		// exists even if the process crashes after the bank responds.
+		payment, err := repo.CreatePayment(txCtx, &store.CreatePaymentParams{
 			AmountCents:  req.Amount,
 			Currency:     req.Currency,
 			CardLastFour: cardLastFour,
@@ -57,6 +88,7 @@ func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePay
 		zap.L().Info(
 			"created pending payment",
 			zap.String("payment_ref", payment.Reference.String()),
+			zap.String("idempotency_key", req.GatewayIdempotencyKey),
 			zap.String("order_id", req.OrderID),
 			zap.Int64("amount", req.Amount),
 		)
@@ -70,30 +102,43 @@ func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePay
 			AmountCents:    req.Amount,
 		}
 
+		// 3) Talk to the bank while holding the transaction — and therefore
+		// the idempotency slot. Concurrent duplicates block on their INSERT
+		// instead of double-charging, and resolve to replay or 409 once this
+		// transaction settles.
 		bankResult, bankErr := s.bankClient.Authorize(txCtx, bankReq)
 
 		if bankErr != nil {
-			zap.L().Error(
-				"bank authorization failed",
-				zap.Error(bankErr),
-				zap.String("payment_ref", payment.Reference.String()),
-			)
+			mapped := MapBankError(bankErr)
 
-			if transErr := domain.ValidateTransition(domain.StatePending, domain.StateFailed); transErr != nil {
-				return fmt.Errorf("invalid state transition: %w", transErr)
+			if outcomeUnknown(bankErr) {
+				// No response, or the bank signaled retryable: the outcome
+				// is unknowable from this side. Roll back the payment row and
+				// the slot so the client can retry with the same key, relying
+				// on the bank to dedupe by its idempotency key.
+				zap.L().Error(
+					"bank authorization failed, rolling back (outcome unknown)",
+					zap.Error(bankErr),
+					zap.String("payment_ref", payment.Reference.String()),
+				)
+				return mapped
 			}
 
-			_, err = s.repo.FailPayment(txCtx, payment.ID)
-			if err != nil {
-				return fmt.Errorf("mark payment as failed: %w", err)
+			// 4a) Definitive decline. Record FAILED and cache the mapped
+			// error response atomically, so every retry replays the same
+			// verdict instead of leaving the client guessing.
+			decline, declineErr := mapped.(*PaymentError)
+			if !declineErr {
+				decline = NewInternalError(bankErr)
 			}
-
-			return MapBankError(bankErr)
+			result, err = recordDecline(txCtx, repo, req, &payment, decline, bankErr)
+			return err
 		}
 
 		zap.L().Info(
 			"bank authorization succeeded",
 			zap.String("payment_ref", payment.Reference.String()),
+			zap.String("idempotency_key", req.GatewayIdempotencyKey),
 			zap.String("bank_auth_id", bankResult.AuthorizationID),
 		)
 
@@ -101,7 +146,7 @@ func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePay
 			return fmt.Errorf("invalid state transition: %w", transErr)
 		}
 
-		authorizedPayment, err := s.repo.AuthorizePayment(txCtx, store.AuthorizePaymentParams{
+		authorizedPayment, err := repo.AuthorizePayment(txCtx, store.AuthorizePaymentParams{
 			ID:              payment.ID,
 			AuthorizationID: pgtype.Text{String: bankResult.AuthorizationID, Valid: true},
 		})
@@ -109,15 +154,75 @@ func (s *PaymentService) Authorize(ctx context.Context, req *models.AuthorizePay
 			return fmt.Errorf("update payment to authorized: %w", err)
 		}
 
-		paymentResponse = buildPaymentResponse(&authorizedPayment)
-		return nil
+		// 4b) Finalize the idempotency record with the SUCCESS response — on
+		// the same transaction as the authorized payment row.
+		result, err = finalizeAuthorizeOutcome(txCtx, repo, req, http.StatusOK, buildPaymentResponse(&authorizedPayment))
+		return err
 	})
 
 	if txErr != nil {
 		return nil, txErr
 	}
 
-	return paymentResponse, nil
+	return result, nil
+}
+
+// outcomeUnknown reports whether the bank call produced no authoritative
+// answer: the transport failed (no response at all) or the bank signaled a
+// retryable error. In both cases nothing must be recorded — the client retries
+// the same Idempotency-Key and the bank dedupes on its side.
+func outcomeUnknown(bankErr error) bool {
+	var bankResp *bankclient.Error
+	return !errors.As(bankErr, &bankResp) || bankResp.Retryable
+}
+
+// recordDecline commits the FAILED payment state and finalizes the idempotency
+// record with the mapped error response. A nil return lets the surrounding
+// transaction commit, making the decline a replayable, definitive outcome.
+func recordDecline(ctx context.Context, repo *repository.Repository, req *models.AuthorizePaymentRequest, payment *store.Payment, decline *PaymentError, bankErr error) (*AuthorizeResult, error) {
+	zap.L().Error(
+		"bank authorization declined",
+		zap.Error(bankErr),
+		zap.String("payment_ref", payment.Reference.String()),
+		zap.String("code", decline.Code),
+	)
+
+	if transErr := domain.ValidateTransition(domain.StatePending, domain.StateFailed); transErr != nil {
+		return nil, fmt.Errorf("invalid state transition: %w", transErr)
+	}
+
+	if _, err := repo.FailPayment(ctx, payment.ID); err != nil {
+		return nil, fmt.Errorf("mark payment as failed: %w", err)
+	}
+
+	return finalizeAuthorizeOutcome(ctx, repo, req, decline.StatusCode, models.ErrorResponse{
+		Error:   decline.Code,
+		Message: decline.Message,
+		Code:    decline.Code,
+	})
+}
+
+// finalizeAuthorizeOutcome marshals the response body, finalizes the
+// idempotency record owned by the current transaction, and returns the exact
+// response the handler must write — identical to what a future replay gets.
+func finalizeAuthorizeOutcome(ctx context.Context, repo *repository.Repository, req *models.AuthorizePaymentRequest, statusCode int, responseBody any) (*AuthorizeResult, error) {
+	body, err := json.Marshal(responseBody)
+	if err != nil {
+		return nil, NewInternalError(fmt.Errorf("marshal idempotency response body: %w", err))
+	}
+
+	if err := repo.FinalizeIdempotencyKey(ctx, req.GatewayIdempotencyKey, req.GatewayIdempotencyPath, statusCode, body); err != nil {
+		return nil, NewInternalError(fmt.Errorf("finalize idempotency record: %w", err))
+	}
+
+	zap.L().Info(
+		"finalized idempotency record",
+		zap.String("idempotency_key", req.GatewayIdempotencyKey),
+		zap.String("path", req.GatewayIdempotencyPath),
+		zap.Int("status_code", statusCode),
+	)
+
+	return &AuthorizeResult{StatusCode: statusCode, Body: body}, nil
 }
 
 func extractLastFourDigits(cardNumber string) string {
@@ -149,9 +254,11 @@ func parseCardExpiry(expiry string) (month, year int, err error) {
 	return month, year, nil
 }
 
-// buildPaymentResponse constructs the API response from database payment record.
-func buildPaymentResponse(payment *store.Payment) *models.PaymentResponse {
-	response := &models.PaymentResponse{
+// buildPaymentResponse constructs the API response from the database payment
+// record. Its JSON shape matches the generated api.PaymentResponse so the
+// serialized body can be cached in the idempotency ledger verbatim.
+func buildPaymentResponse(payment *store.Payment) models.PaymentResponse {
+	response := models.PaymentResponse{
 		PaymentID:  fmt.Sprintf("%d", payment.ID),
 		Reference:  payment.Reference.String(),
 		OrderID:    payment.OrderID,

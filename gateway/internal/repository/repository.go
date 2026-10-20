@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/nehemiah-dev/payment-gateway/internal/store"
@@ -68,96 +67,44 @@ func (r *Repository) FailPayment(ctx context.Context, paymentID int64) (store.Pa
 
 // --- IDEMPOTENCY ---
 
-// IdempotencyRecord is the domain representation of a stored idempotency entry.
-// It mirrors store.IdempotencyKey but is intentionally kept as a separate type
-// so the middleware layer is not coupled to the sqlc-generated store types.
-type IdempotencyRecord struct {
-	ID           int64
-	Key          string
-	RequestPath  string
-	RequestHash  string
-	ResponseCode int
-	ResponseBody json.RawMessage
-	// Status is "in_progress" while the owning request is being processed,
-	// "complete" once the response has been cached.
-	Status string
+// NewTxRepository binds a Repository to an open transaction. The Querier
+// handed to database.WithTx callbacks satisfies store.DBTX, so queries built
+// from it execute on the transaction instead of the pool. That is what lets
+// the payment service commit the payment row and the idempotency ledger row
+// together — a rollback discards both.
+func NewTxRepository(txQuerier store.DBTX) *Repository {
+	return &Repository{queries: store.New(txQuerier)}
 }
 
-// IdempotencyRepository defines the contract used by the idempotency middleware.
-type IdempotencyRepository interface {
-	// Get returns the cached record for (key, path), or nil if none exists.
-	Get(ctx context.Context, key, requestPath string) (*IdempotencyRecord, error)
-	// Reserve atomically inserts an in_progress slot for (key, path, hash).
-	// Returns (record, nil) if this caller won the race and owns the slot.
-	// Returns (nil, nil) if another request already holds the slot (conflict).
-	Reserve(ctx context.Context, key, requestPath, requestHash string) (*IdempotencyRecord, error)
-	// Finalize updates an in_progress record with the final response.
-	Finalize(ctx context.Context, key, requestPath string, statusCode int, body json.RawMessage) error
-	// Release removes an in_progress record after a failed request.
-	Release(ctx context.Context, key, requestPath string) error
-}
-
-// NewIdempotencyRepository returns an IdempotencyRepository backed by the
-// shared sqlc store — the same pattern used for payments.
-func NewIdempotencyRepository(pool *pgxpool.Pool) IdempotencyRepository {
-	return &idempotencyRepository{queries: store.New(pool)}
-}
-
-type idempotencyRepository struct {
-	queries *store.Queries
-}
-
-func (r *idempotencyRepository) Get(ctx context.Context, key, requestPath string) (*IdempotencyRecord, error) {
-	row, err := r.queries.GetIdempotencyKey(ctx, store.GetIdempotencyKeyParams{
-		Key:         key,
-		RequestPath: requestPath,
-	})
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	rec := &IdempotencyRecord{
-		ID:          row.ID,
-		Key:         row.Key,
-		RequestPath: row.RequestPath,
-		RequestHash: row.RequestHash,
-		Status:      row.Status,
-	}
-	if row.ResponseCode.Valid {
-		rec.ResponseCode = int(row.ResponseCode.Int32)
-	}
-	if row.ResponseBody != nil {
-		rec.ResponseBody = row.ResponseBody
-	}
-	return rec, nil
-}
-
-func (r *idempotencyRepository) Reserve(ctx context.Context, key, requestPath, requestHash string) (*IdempotencyRecord, error) {
-	row, err := r.queries.ReserveIdempotencyKey(ctx, store.ReserveIdempotencyKeyParams{
+// ReserveIdempotencyKey atomically claims an in_progress slot for
+// (key, requestPath). Returns pgx.ErrNoRows when a committed record already
+// holds the slot (conflict) — the caller must then resolve the existing
+// record instead of processing the request.
+func (r *Repository) ReserveIdempotencyKey(ctx context.Context, key, requestPath, requestHash string) error {
+	_, err := r.queries.ReserveIdempotencyKey(ctx, store.ReserveIdempotencyKeyParams{
 		Key:         key,
 		RequestPath: requestPath,
 		RequestHash: requestHash,
 	})
-	if err != nil {
-		// ON CONFLICT DO NOTHING with a :one query returns pgx.ErrNoRows when
-		// the INSERT was suppressed — another request holds the slot.
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &IdempotencyRecord{
-		ID:          row.ID,
-		Key:         row.Key,
-		RequestPath: row.RequestPath,
-		RequestHash: row.RequestHash,
-		Status:      row.Status,
-	}, nil
+	// ON CONFLICT DO NOTHING with a :one query surfaces pgx.ErrNoRows when
+	// the INSERT was suppressed — a committed record already owns the slot.
+	return err
 }
 
-func (r *idempotencyRepository) Finalize(ctx context.Context, key, requestPath string, statusCode int, body json.RawMessage) error {
+// GetIdempotencyKey returns the ledger record for (key, requestPath), or
+// pgx.ErrNoRows when none exists.
+func (r *Repository) GetIdempotencyKey(ctx context.Context, key, requestPath string) (store.IdempotencyKey, error) {
+	return r.queries.GetIdempotencyKey(ctx, store.GetIdempotencyKeyParams{
+		Key:         key,
+		RequestPath: requestPath,
+	})
+}
+
+// FinalizeIdempotencyKey records the final response for the slot owned by the
+// current transaction and flips its status to complete. It must run inside the
+// same transaction that commits the payment row so that a committed payment is
+// always replayable.
+func (r *Repository) FinalizeIdempotencyKey(ctx context.Context, key, requestPath string, statusCode int, body json.RawMessage) error {
 	if statusCode < 100 || statusCode > 599 {
 		return fmt.Errorf("invalid HTTP response code: %d", statusCode)
 	}
@@ -168,8 +115,4 @@ func (r *idempotencyRepository) Finalize(ctx context.Context, key, requestPath s
 		ResponseBody: body,
 	})
 	return err
-}
-
-func (r *idempotencyRepository) Release(ctx context.Context, key, requestPath string) error {
-	return r.queries.ReleaseIdempotencyKey(ctx, key, requestPath)
 }

@@ -5,10 +5,10 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/nehemiah-dev/payment-gateway/internal/api"
+	"github.com/nehemiah-dev/payment-gateway/internal/middleware"
 	"github.com/nehemiah-dev/payment-gateway/internal/models"
 	"github.com/nehemiah-dev/payment-gateway/internal/service"
 )
@@ -41,40 +41,31 @@ func (s *Server) AuthorizePayment(c *gin.Context, params api.AuthorizePaymentPar
 		CardExpiry: apiReq.CardExpiry,
 		CardCVV:    apiReq.CardCvv,
 		// Forward the idempotency key to the bank so it can deduplicate on its
-		// side. Replay decisions at the gateway level are owned by the middleware.
+		// side.
 		BankIdempotencyKey: params.IdempotencyKey,
+		// The gateway's own idempotency coordinates, stamped by the
+		// middleware. The service persists the ledger row for (key, path)
+		// inside the same transaction that commits the payment record.
+		GatewayIdempotencyKey:      c.GetString(middleware.CtxIdempotencyKey),
+		GatewayIdempotencyPath:     c.Request.URL.Path,
+		GatewayIdempotencyBodyHash: c.GetString(middleware.CtxIdempotencyBodyHash),
 	}
 
 	// Call service layer
 	ctx := c.Request.Context()
-	payment, err := s.paymentService.Authorize(ctx, req)
+	res, err := s.paymentService.Authorize(ctx, req)
 	if err != nil {
 		handleServiceError(c, err)
 		return
 	}
 
-	// Convert internal model to API response
-	refUUID, _ := uuid.Parse(payment.Reference)
-	apiResponse := api.PaymentResponse{
-		PaymentId:  payment.PaymentID,
-		Reference:  refUUID,
-		OrderId:    payment.OrderID,
-		CustomerId: payment.CustomerID,
-		Amount:     payment.Amount,
-		Currency:   payment.Currency,
-		State:      api.PaymentState(payment.State),
-		CreatedAt:  payment.CreatedAt,
+	// The service owns the cached response: write the exact bytes it stored
+	// in (or replayed from) the idempotency ledger, so the original response
+	// and any replay are identical.
+	if res.Replayed {
+		c.Header(middleware.ReplayedHeader, "true")
 	}
-
-	if payment.BankAuthID != nil {
-		apiResponse.BankAuthId = *payment.BankAuthID
-	}
-
-	if payment.AuthorizedAt != nil {
-		apiResponse.AuthorizedAt = *payment.AuthorizedAt
-	}
-
-	c.JSON(http.StatusOK, apiResponse)
+	c.Data(res.StatusCode, "application/json", res.Body)
 }
 
 // handleServiceError maps service errors to HTTP responses

@@ -17,6 +17,15 @@ type AuthorizePaymentRequest struct {
 	// the bank so it can apply its own deduplication. Set by the handler from
 	// the HTTP header; not part of the JSON body.
 	BankIdempotencyKey string `json:"-"`
+
+	// Gateway-scoped idempotency coordinates, stamped by the idempotency
+	// middleware. The service reserves and finalizes the ledger row for
+	// (key, path) inside the same transaction that commits the payment
+	// record, so the payment outcome and its idempotency entry commit or
+	// roll back atomically. Not part of the JSON body.
+	GatewayIdempotencyKey      string `json:"-"`
+	GatewayIdempotencyPath     string `json:"-"`
+	GatewayIdempotencyBodyHash string `json:"-"`
 }
 
 type PaymentResponse struct {
