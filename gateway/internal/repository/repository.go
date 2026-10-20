@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -92,6 +93,8 @@ type IdempotencyRepository interface {
 	Reserve(ctx context.Context, key, requestPath, requestHash string) (*IdempotencyRecord, error)
 	// Finalize updates an in_progress record with the final response.
 	Finalize(ctx context.Context, key, requestPath string, statusCode int, body json.RawMessage) error
+	// Release removes an in_progress record after a failed request.
+	Release(ctx context.Context, key, requestPath string) error
 }
 
 // NewIdempotencyRepository returns an IdempotencyRepository backed by the
@@ -155,6 +158,9 @@ func (r *idempotencyRepository) Reserve(ctx context.Context, key, requestPath, r
 }
 
 func (r *idempotencyRepository) Finalize(ctx context.Context, key, requestPath string, statusCode int, body json.RawMessage) error {
+	if statusCode < 100 || statusCode > 599 {
+		return fmt.Errorf("invalid HTTP response code: %d", statusCode)
+	}
 	_, err := r.queries.FinalizeIdempotencyKey(ctx, store.FinalizeIdempotencyKeyParams{
 		Key:          key,
 		RequestPath:  requestPath,
@@ -162,4 +168,8 @@ func (r *idempotencyRepository) Finalize(ctx context.Context, key, requestPath s
 		ResponseBody: body,
 	})
 	return err
+}
+
+func (r *idempotencyRepository) Release(ctx context.Context, key, requestPath string) error {
+	return r.queries.ReleaseIdempotencyKey(ctx, key, requestPath)
 }

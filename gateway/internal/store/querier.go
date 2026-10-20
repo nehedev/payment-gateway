@@ -22,6 +22,7 @@ type Querier interface {
 	ListPaymentsByCustomer(ctx context.Context, arg ListPaymentsByCustomerParams) ([]Payment, error)
 	ListPaymentsByOrder(ctx context.Context, orderID string) ([]Payment, error)
 	RefundPayment(ctx context.Context, arg RefundPaymentParams) (Payment, error)
+	ReleaseIdempotencyKey(ctx context.Context, key string, requestPath string) error
 	ReserveIdempotencyKey(ctx context.Context, arg ReserveIdempotencyKeyParams) (IdempotencyKey, error)
 	VoidPayment(ctx context.Context, arg VoidPaymentParams) (Payment, error)
 }

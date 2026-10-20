@@ -156,10 +156,10 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 
 			// Status is complete — replay the cached response.
 			var responseBody interface{}
-			if err := json.Unmarshal(existing.ResponseBody, &responseBody); err != nil {
+			if decodeErr := json.Unmarshal(existing.ResponseBody, &responseBody); decodeErr != nil {
 				zap.L().Error(
 					"failed to unmarshal cached response",
-					zap.Error(err),
+					zap.Error(decodeErr),
 					zap.String("idempotency_key", idempotencyKey),
 				)
 				c.JSON(http.StatusInternalServerError, gin.H{
@@ -249,6 +249,13 @@ func Idempotency(repo repository.IdempotencyRepository) gin.HandlerFunc {
 					zap.Int("status_code", recorder.statusCode),
 				)
 			}
+		} else if err := repo.Release(ctx, idempotencyKey, requestPath); err != nil {
+			zap.L().Error(
+				"failed to release idempotency record after unsuccessful response",
+				zap.Error(err),
+				zap.String("idempotency_key", idempotencyKey),
+				zap.String("path", requestPath),
+			)
 		}
 	}
 }
