@@ -19,6 +19,8 @@ linters:
   settings:
     govet:
       enable-all: true
+      disable:
+        - fieldalignment
     gosec:
       severity: medium
       confidence: medium

@@ -37,3 +37,6 @@ tmp/
 *.swo
 *~
 .DS_Store
+
+AGENTS.md
+BUG.md

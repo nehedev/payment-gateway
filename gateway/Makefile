@@ -1,15 +1,21 @@
 include .env
 export
-.PHONY: fmt lint test build clean migrate-up migrate-down migrate-down-all migrate-version migrate-create sqlc-generate api-generate
+.PHONY: fmt lint vuln test build clean migrate-up migrate-down migrate-down-all migrate-version migrate-create sqlc-generate api-generate
 
 BINARY_NAME := gateway
 BIN_DIR := ./bin
 MIGRATIONS_DIR = db/migrations
 DATABASE_URL = postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)?sslmode=$(DB_SSLMODE)
-lint:
+
+fmt:
 	goimports -w -local github.com/nehemiah-dev/payment-gateway .
 	gofumpt -extra -w .
+
+lint:
 	golangci-lint run ./...
+
+vuln:
+	govulncheck ./...
 
 test:
 	go test -race -cover ./...
