@@ -61,6 +61,14 @@ func scopeFromCapture(req *models.CapturePaymentRequest) idempotencyScope {
 	}
 }
 
+func scopeFromRefund(req *models.RefundPaymentRequest) idempotencyScope {
+	return idempotencyScope{
+		key:      req.GatewayIdempotencyKey,
+		path:     req.GatewayIdempotencyPath,
+		bodyHash: req.GatewayIdempotencyBodyHash,
+	}
+}
+
 // claimIdempotency reserves the (key, path) slot inside the caller's open
 // payment transaction. Outcomes:
 //

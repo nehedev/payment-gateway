@@ -182,7 +182,7 @@ func outcomeUnknown(bankErr error) bool {
 // transaction commit, making the decline a replayable, definitive outcome.
 func recordDecline(ctx context.Context, repo *repository.Repository, scope idempotencyScope, payment *store.Payment, decline *PaymentError, bankErr error) (*IdempotentResult, error) {
 	zap.L().Error(
-		"bank authorization declined",
+		"bank operation declined",
 		zap.Error(bankErr),
 		zap.String("payment_ref", payment.Reference.String()),
 		zap.String("code", decline.Code),
@@ -280,12 +280,21 @@ func buildPaymentResponse(payment *store.Payment) models.PaymentResponse {
 		response.BankCaptureID = &captureID
 	}
 
+	if payment.RefundID.Valid && payment.RefundID.String != "" {
+		refundID := payment.RefundID.String
+		response.BankRefundID = &refundID
+	}
+
 	if payment.PaymentState == string(domain.StateAuthorized) {
 		response.AuthorizedAt = &payment.UpdatedAt
 	}
 
 	if payment.PaymentState == string(domain.StateCaptured) {
 		response.CapturedAt = &payment.UpdatedAt
+	}
+
+	if payment.PaymentState == string(domain.StateRefunded) {
+		response.RefundedAt = &payment.UpdatedAt
 	}
 
 	return response

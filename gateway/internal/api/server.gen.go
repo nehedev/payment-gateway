@@ -128,6 +128,9 @@ type PaymentResponse struct {
 	// BankCaptureId Bank capture ID (present when state is captured)
 	BankCaptureId string `json:"bank_capture_id,omitempty,omitzero"`
 
+	// BankRefundId Bank refund ID (present when state is refunded)
+	BankRefundId string `json:"bank_refund_id,omitempty,omitzero"`
+
 	// CapturedAt Timestamp when payment was captured (present when state is captured)
 	CapturedAt time.Time `json:"captured_at,omitempty,omitzero"`
 
@@ -149,6 +152,9 @@ type PaymentResponse struct {
 	// Reference Unique payment reference (UUID)
 	Reference openapi_types.UUID `json:"reference"`
 
+	// RefundedAt Timestamp when payment was refunded (present when state is refunded)
+	RefundedAt time.Time `json:"refunded_at,omitempty,omitzero"`
+
 	// State Payment lifecycle state:
 	// - pending: Initial state, awaiting authorization
 	// - authorized: Funds reserved, awaiting capture
@@ -168,6 +174,12 @@ type PaymentResponse struct {
 // - failed: Authorization or other operation failed
 type PaymentState string
 
+// RefundPaymentRequest defines model for RefundPaymentRequest.
+type RefundPaymentRequest struct {
+	// Amount Refund amount in cents (must match the captured amount)
+	Amount int64 `json:"amount"`
+}
+
 // AuthorizePaymentParams defines parameters for AuthorizePayment.
 type AuthorizePaymentParams struct {
 	// IdempotencyKey Unique key to ensure idempotent processing (max 255 chars)
@@ -180,11 +192,20 @@ type CapturePaymentParams struct {
 	IdempotencyKey string `json:"Idempotency-Key"`
 }
 
+// RefundPaymentParams defines parameters for RefundPayment.
+type RefundPaymentParams struct {
+	// IdempotencyKey Unique key to ensure idempotent processing (max 255 chars)
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
 // AuthorizePaymentJSONRequestBody defines body for AuthorizePayment for application/json ContentType.
 type AuthorizePaymentJSONRequestBody = AuthorizePaymentRequest
 
 // CapturePaymentJSONRequestBody defines body for CapturePayment for application/json ContentType.
 type CapturePaymentJSONRequestBody = CapturePaymentRequest
+
+// RefundPaymentJSONRequestBody defines body for RefundPayment for application/json ContentType.
+type RefundPaymentJSONRequestBody = RefundPaymentRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -194,6 +215,9 @@ type ServerInterface interface {
 	// CapturePayment Capture an authorized payment
 	// (POST /api/v1/payments/{reference}/capture)
 	CapturePayment(c *gin.Context, reference openapi_types.UUID, params CapturePaymentParams)
+	// RefundPayment Refund a captured payment
+	// (POST /api/v1/payments/{reference}/refund)
+	RefundPayment(c *gin.Context, reference openapi_types.UUID, params RefundPaymentParams)
 
 	// (GET /health)
 	GetHealth(c *gin.Context)
@@ -303,6 +327,58 @@ func (siw *ServerInterfaceWrapper) CapturePayment(c *gin.Context) {
 	siw.Handler.CapturePayment(c, reference, params)
 }
 
+// RefundPayment operation middleware
+func (siw *ServerInterfaceWrapper) RefundPayment(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "reference" -------------
+	var reference openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "reference", c.Param("reference"), &reference, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter reference: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params RefundPaymentParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for Idempotency-Key, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter Idempotency-Key: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.IdempotencyKey = IdempotencyKey
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter Idempotency-Key is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RefundPayment(c, reference, params)
+}
+
 // GetHealth operation middleware
 func (siw *ServerInterfaceWrapper) GetHealth(c *gin.Context) {
 
@@ -345,6 +421,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 
 	router.POST(options.BaseURL+"/api/v1/payments/authorize", wrapper.AuthorizePayment)
 	router.POST(options.BaseURL+"/api/v1/payments/:reference/capture", wrapper.CapturePayment)
+	router.POST(options.BaseURL+"/api/v1/payments/:reference/refund", wrapper.RefundPayment)
 	router.GET(options.BaseURL+"/health", wrapper.GetHealth)
 }
 
@@ -551,6 +628,108 @@ func (response CapturePayment503JSONResponse) VisitCapturePaymentResponse(w http
 	return err
 }
 
+type RefundPaymentRequestObject struct {
+	Reference openapi_types.UUID `json:"reference"`
+	Params    RefundPaymentParams
+	Body      *RefundPaymentJSONRequestBody
+}
+
+type RefundPaymentResponseObject interface {
+	VisitRefundPaymentResponse(w http.ResponseWriter) error
+}
+
+type RefundPayment200ResponseHeaders struct {
+	XIdempotentReplayed string
+}
+
+type RefundPayment200JSONResponse struct {
+	Body    PaymentResponse
+	Headers RefundPayment200ResponseHeaders
+}
+
+func (response RefundPayment200JSONResponse) VisitRefundPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Idempotent-Replayed", fmt.Sprint(response.Headers.XIdempotentReplayed))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RefundPayment400JSONResponse ErrorResponse
+
+func (response RefundPayment400JSONResponse) VisitRefundPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RefundPayment404JSONResponse ErrorResponse
+
+func (response RefundPayment404JSONResponse) VisitRefundPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RefundPayment409JSONResponse ErrorResponse
+
+func (response RefundPayment409JSONResponse) VisitRefundPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RefundPayment500JSONResponse ErrorResponse
+
+func (response RefundPayment500JSONResponse) VisitRefundPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RefundPayment503JSONResponse ErrorResponse
+
+func (response RefundPayment503JSONResponse) VisitRefundPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetHealthRequestObject struct {
 }
 
@@ -594,6 +773,9 @@ type StrictServerInterface interface {
 	// CapturePayment Capture an authorized payment
 	// (POST /api/v1/payments/{reference}/capture)
 	CapturePayment(ctx context.Context, request CapturePaymentRequestObject) (CapturePaymentResponseObject, error)
+	// RefundPayment Refund a captured payment
+	// (POST /api/v1/payments/{reference}/refund)
+	RefundPayment(ctx context.Context, request RefundPaymentRequestObject) (RefundPaymentResponseObject, error)
 
 	// (GET /health)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
@@ -716,6 +898,40 @@ func (sh *strictHandler) CapturePayment(ctx *gin.Context, reference openapi_type
 		sh.options.HandlerErrorFunc(ctx, err)
 	} else if validResponse, ok := response.(CapturePaymentResponseObject); ok {
 		if err := validResponse.VisitCapturePaymentResponse(ctx.Writer); err != nil {
+			sh.options.ResponseErrorHandlerFunc(ctx, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(ctx, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RefundPayment operation middleware
+func (sh *strictHandler) RefundPayment(ctx *gin.Context, reference openapi_types.UUID, params RefundPaymentParams) {
+	var request RefundPaymentRequestObject
+
+	request.Reference = reference
+	request.Params = params
+
+	var body RefundPaymentJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(ctx, err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.RefundPayment(ctx, request.(RefundPaymentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RefundPayment")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		sh.options.HandlerErrorFunc(ctx, err)
+	} else if validResponse, ok := response.(RefundPaymentResponseObject); ok {
+		if err := validResponse.VisitRefundPaymentResponse(ctx.Writer); err != nil {
 			sh.options.ResponseErrorHandlerFunc(ctx, err)
 		}
 	} else if response != nil {

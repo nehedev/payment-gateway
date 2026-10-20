@@ -165,6 +165,84 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/payments/{reference}/refund:
+    post:
+      operationId: refundPayment
+      summary: Refund a captured payment
+      description: |
+        Refunds a previously captured payment. The requested amount must
+        match the captured amount. This operation requires an
+        Idempotency-Key header to prevent double refunds. The payment must
+        be in CAPTURED state and transitions to REFUNDED upon success.
+      tags: [Payments]
+      parameters:
+        - name: reference
+          in: path
+          required: true
+          description: Unique payment reference (UUID) returned by the authorize call
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Unique key to ensure idempotent processing (max 255 chars)
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundPaymentRequest'
+      responses:
+        '200':
+          description: Payment refunded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+          headers:
+            X-Idempotent-Replayed:
+              description: Present with value "true" if this is a replayed cached response
+              schema:
+                type: string
+        '400':
+          description: Validation error (e.g. refund amount does not match the captured amount)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Payment not found with the given reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Conflict - either the payment is not in a refundable state, or the
+            bank reports the underlying capture as no longer usable
+            (not found, not completed, or already refunded)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Bank service temporarily unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /health:
     get:
       operationId: getHealth
@@ -250,6 +328,18 @@ components:
           minimum: 1
           example: 5000
 
+    RefundPaymentRequest:
+      type: object
+      required:
+        - amount
+      properties:
+        amount:
+          type: integer
+          format: int64
+          description: Refund amount in cents (must match the captured amount)
+          minimum: 1
+          example: 5000
+
     PaymentResponse:
       type: object
       required:
@@ -298,6 +388,10 @@ components:
           type: string
           description: Bank capture ID (present when state is captured)
           example: "cap_550e8400-e29b-41d4-a716-446655440001"
+        bank_refund_id:
+          type: string
+          description: Bank refund ID (present when state is refunded)
+          example: "ref_550e8400-e29b-41d4-a716-446655440002"
         created_at:
           type: string
           format: date-time
@@ -313,6 +407,11 @@ components:
           format: date-time
           description: Timestamp when payment was captured (present when state is captured)
           example: "2026-09-24T12:35:00Z"
+        refunded_at:
+          type: string
+          format: date-time
+          description: Timestamp when payment was refunded (present when state is refunded)
+          example: "2026-09-24T12:36:00Z"
 
     PaymentState:
       type: string

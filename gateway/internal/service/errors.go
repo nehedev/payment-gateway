@@ -114,11 +114,14 @@ func MapBankError(err error) error {
 	case bankclient.ErrorAuthorizationNotFound,
 		bankclient.ErrorAuthorizationExpired,
 		bankclient.ErrorAuthorizationAlreadyUsed,
+		bankclient.ErrorCaptureNotFound,
+		bankclient.ErrorRefundNotFound,
 		bankclient.ErrorAlreadyCaptured,
 		bankclient.ErrorAlreadyVoided,
 		bankclient.ErrorAlreadyRefunded:
-		// The authorization can no longer be captured/executed — its state
-		// has irreversibly moved on. A conflict, not a validation error.
+		// The authorization/capture can no longer be captured/refunded —
+		// its state has irreversibly moved on. A conflict, not a validation
+		// error.
 		return NewBankDeclineError(bankErr.Code, bankErr.Message, http.StatusConflict)
 
 	case bankclient.ErrorAmountMismatch:

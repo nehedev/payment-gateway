@@ -42,6 +42,7 @@ func TestValidateTransition(t *testing.T) {
 		{"authorized to voided", StateAuthorized, StateVoided, false},
 		{"authorized to failed", StateAuthorized, StateFailed, false},
 		{"captured to refunded", StateCaptured, StateRefunded, false},
+		{"captured to failed", StateCaptured, StateFailed, true},
 
 		// Invalid transitions
 		{"pending to captured", StatePending, StateCaptured, true},

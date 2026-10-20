@@ -81,6 +81,23 @@ func ValidateCaptureRequest(req *models.CapturePaymentRequest) error {
 	return nil
 }
 
+// ValidateRefundRequest validates the refund request.
+func ValidateRefundRequest(req *models.RefundPaymentRequest) error {
+	// Validate amount — the refund must move the FULL captured amount; an
+	// exact match against the captured amount is checked against the stored
+	// payment row in the service.
+	if req.Amount <= 0 {
+		return fmt.Errorf("amount must be greater than 0")
+	}
+
+	// Validate reference — it routes to the stored payment row.
+	if _, err := uuid.Parse(req.Reference); err != nil {
+		return fmt.Errorf("payment reference must be a valid UUID")
+	}
+
+	return nil
+}
+
 // luhnCheck validates a card number using the Luhn algorithm.
 func luhnCheck(cardNumber string) bool {
 	var sum int

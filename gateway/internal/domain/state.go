@@ -43,7 +43,7 @@ var ValidTransitions = map[PaymentState][]PaymentState{
 		StateFailed,   // Capture or void failed
 	},
 	StateCaptured: {
-		StateRefunded, // Payment refunded
+		StateRefunded, // Payment refunded — money already moved, so captured can never fail
 	},
 	StateVoided:   {}, // Terminal state
 	StateRefunded: {}, // Terminal state
