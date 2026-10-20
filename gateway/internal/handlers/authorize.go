@@ -33,13 +33,13 @@ func (s *Server) AuthorizePayment(c *gin.Context, params api.AuthorizePaymentPar
 
 	// Convert API request to internal service model
 	req := &models.AuthorizePaymentRequest{
-		OrderID:            apiReq.OrderId,
-		CustomerID:         apiReq.CustomerId,
-		Amount:             apiReq.Amount,
-		Currency:           apiReq.Currency,
-		CardNumber:         apiReq.CardNumber,
-		CardExpiry:         apiReq.CardExpiry,
-		CardCVV:            apiReq.CardCvv,
+		OrderID:    apiReq.OrderId,
+		CustomerID: apiReq.CustomerId,
+		Amount:     apiReq.Amount,
+		Currency:   apiReq.Currency,
+		CardNumber: apiReq.CardNumber,
+		CardExpiry: apiReq.CardExpiry,
+		CardCVV:    apiReq.CardCvv,
 		// Forward the idempotency key to the bank so it can deduplicate on its
 		// side. Replay decisions at the gateway level are owned by the middleware.
 		BankIdempotencyKey: params.IdempotencyKey,
