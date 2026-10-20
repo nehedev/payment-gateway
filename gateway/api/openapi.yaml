@@ -87,6 +87,84 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/payments/{reference}/capture:
+    post:
+      operationId: capturePayment
+      summary: Capture an authorized payment
+      description: |
+        Captures a previously authorized payment. The requested amount must
+        match the authorized amount. This operation requires an
+        Idempotency-Key header to prevent double captures. The payment must
+        be in AUTHORIZED state and transitions to CAPTURED upon success.
+      tags: [Payments]
+      parameters:
+        - name: reference
+          in: path
+          required: true
+          description: Unique payment reference (UUID) returned by the authorize call
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Unique key to ensure idempotent processing (max 255 chars)
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CapturePaymentRequest'
+      responses:
+        '200':
+          description: Payment captured successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+          headers:
+            X-Idempotent-Replayed:
+              description: Present with value "true" if this is a replayed cached response
+              schema:
+                type: string
+        '400':
+          description: Validation error (e.g. capture amount does not match the authorized amount)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Payment not found with the given reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Conflict - either the payment is not in a captureable state, or the
+            bank reports the underlying authorization as no longer usable
+            (not found, expired, already used or already captured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Bank service temporarily unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /health:
     get:
       operationId: getHealth
@@ -160,6 +238,18 @@ components:
           pattern: '^[0-9]{3,4}$'
           example: "123"
 
+    CapturePaymentRequest:
+      type: object
+      required:
+        - amount
+      properties:
+        amount:
+          type: integer
+          format: int64
+          description: Capture amount in cents (must match the authorized amount)
+          minimum: 1
+          example: 5000
+
     PaymentResponse:
       type: object
       required:
@@ -204,6 +294,10 @@ components:
           type: string
           description: Bank authorization ID (present when state is authorized)
           example: "auth_550e8400-e29b-41d4-a716-446655440000"
+        bank_capture_id:
+          type: string
+          description: Bank capture ID (present when state is captured)
+          example: "cap_550e8400-e29b-41d4-a716-446655440001"
         created_at:
           type: string
           format: date-time
@@ -214,6 +308,11 @@ components:
           format: date-time
           description: Timestamp when payment was authorized (present when state is authorized)
           example: "2026-09-24T12:34:57Z"
+        captured_at:
+          type: string
+          format: date-time
+          description: Timestamp when payment was captured (present when state is captured)
+          example: "2026-09-24T12:35:00Z"
 
     PaymentState:
       type: string

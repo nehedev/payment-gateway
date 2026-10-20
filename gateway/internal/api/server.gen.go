@@ -88,6 +88,12 @@ type AuthorizePaymentRequest struct {
 	OrderId string `json:"order_id"`
 }
 
+// CapturePaymentRequest defines model for CapturePaymentRequest.
+type CapturePaymentRequest struct {
+	// Amount Capture amount in cents (must match the authorized amount)
+	Amount int64 `json:"amount"`
+}
+
 // ErrorResponse defines model for ErrorResponse.
 type ErrorResponse struct {
 	// Code Additional error code (optional)
@@ -118,6 +124,12 @@ type PaymentResponse struct {
 
 	// BankAuthId Bank authorization ID (present when state is authorized)
 	BankAuthId string `json:"bank_auth_id,omitempty,omitzero"`
+
+	// BankCaptureId Bank capture ID (present when state is captured)
+	BankCaptureId string `json:"bank_capture_id,omitempty,omitzero"`
+
+	// CapturedAt Timestamp when payment was captured (present when state is captured)
+	CapturedAt time.Time `json:"captured_at,omitempty,omitzero"`
 
 	// CreatedAt Timestamp when payment was created
 	CreatedAt time.Time `json:"created_at"`
@@ -162,14 +174,26 @@ type AuthorizePaymentParams struct {
 	IdempotencyKey string `json:"Idempotency-Key"`
 }
 
+// CapturePaymentParams defines parameters for CapturePayment.
+type CapturePaymentParams struct {
+	// IdempotencyKey Unique key to ensure idempotent processing (max 255 chars)
+	IdempotencyKey string `json:"Idempotency-Key"`
+}
+
 // AuthorizePaymentJSONRequestBody defines body for AuthorizePayment for application/json ContentType.
 type AuthorizePaymentJSONRequestBody = AuthorizePaymentRequest
+
+// CapturePaymentJSONRequestBody defines body for CapturePayment for application/json ContentType.
+type CapturePaymentJSONRequestBody = CapturePaymentRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// AuthorizePayment Authorize a payment
 	// (POST /api/v1/payments/authorize)
 	AuthorizePayment(c *gin.Context, params AuthorizePaymentParams)
+	// CapturePayment Capture an authorized payment
+	// (POST /api/v1/payments/{reference}/capture)
+	CapturePayment(c *gin.Context, reference openapi_types.UUID, params CapturePaymentParams)
 
 	// (GET /health)
 	GetHealth(c *gin.Context)
@@ -227,6 +251,58 @@ func (siw *ServerInterfaceWrapper) AuthorizePayment(c *gin.Context) {
 	siw.Handler.AuthorizePayment(c, params)
 }
 
+// CapturePayment operation middleware
+func (siw *ServerInterfaceWrapper) CapturePayment(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "reference" -------------
+	var reference openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "reference", c.Param("reference"), &reference, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter reference: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CapturePaymentParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for Idempotency-Key, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter Idempotency-Key: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.IdempotencyKey = IdempotencyKey
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter Idempotency-Key is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CapturePayment(c, reference, params)
+}
+
 // GetHealth operation middleware
 func (siw *ServerInterfaceWrapper) GetHealth(c *gin.Context) {
 
@@ -268,6 +344,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	}
 
 	router.POST(options.BaseURL+"/api/v1/payments/authorize", wrapper.AuthorizePayment)
+	router.POST(options.BaseURL+"/api/v1/payments/:reference/capture", wrapper.CapturePayment)
 	router.GET(options.BaseURL+"/health", wrapper.GetHealth)
 }
 
@@ -372,6 +449,108 @@ func (response AuthorizePayment503JSONResponse) VisitAuthorizePaymentResponse(w 
 	return err
 }
 
+type CapturePaymentRequestObject struct {
+	Reference openapi_types.UUID `json:"reference"`
+	Params    CapturePaymentParams
+	Body      *CapturePaymentJSONRequestBody
+}
+
+type CapturePaymentResponseObject interface {
+	VisitCapturePaymentResponse(w http.ResponseWriter) error
+}
+
+type CapturePayment200ResponseHeaders struct {
+	XIdempotentReplayed string
+}
+
+type CapturePayment200JSONResponse struct {
+	Body    PaymentResponse
+	Headers CapturePayment200ResponseHeaders
+}
+
+func (response CapturePayment200JSONResponse) VisitCapturePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Idempotent-Replayed", fmt.Sprint(response.Headers.XIdempotentReplayed))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CapturePayment400JSONResponse ErrorResponse
+
+func (response CapturePayment400JSONResponse) VisitCapturePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CapturePayment404JSONResponse ErrorResponse
+
+func (response CapturePayment404JSONResponse) VisitCapturePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CapturePayment409JSONResponse ErrorResponse
+
+func (response CapturePayment409JSONResponse) VisitCapturePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CapturePayment500JSONResponse ErrorResponse
+
+func (response CapturePayment500JSONResponse) VisitCapturePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CapturePayment503JSONResponse ErrorResponse
+
+func (response CapturePayment503JSONResponse) VisitCapturePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetHealthRequestObject struct {
 }
 
@@ -412,6 +591,9 @@ type StrictServerInterface interface {
 	// AuthorizePayment Authorize a payment
 	// (POST /api/v1/payments/authorize)
 	AuthorizePayment(ctx context.Context, request AuthorizePaymentRequestObject) (AuthorizePaymentResponseObject, error)
+	// CapturePayment Capture an authorized payment
+	// (POST /api/v1/payments/{reference}/capture)
+	CapturePayment(ctx context.Context, request CapturePaymentRequestObject) (CapturePaymentResponseObject, error)
 
 	// (GET /health)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
@@ -500,6 +682,40 @@ func (sh *strictHandler) AuthorizePayment(ctx *gin.Context, params AuthorizePaym
 		sh.options.HandlerErrorFunc(ctx, err)
 	} else if validResponse, ok := response.(AuthorizePaymentResponseObject); ok {
 		if err := validResponse.VisitAuthorizePaymentResponse(ctx.Writer); err != nil {
+			sh.options.ResponseErrorHandlerFunc(ctx, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(ctx, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CapturePayment operation middleware
+func (sh *strictHandler) CapturePayment(ctx *gin.Context, reference openapi_types.UUID, params CapturePaymentParams) {
+	var request CapturePaymentRequestObject
+
+	request.Reference = reference
+	request.Params = params
+
+	var body CapturePaymentJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(ctx, err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.CapturePayment(ctx, request.(CapturePaymentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CapturePayment")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		sh.options.HandlerErrorFunc(ctx, err)
+	} else if validResponse, ok := response.(CapturePaymentResponseObject); ok {
+		if err := validResponse.VisitCapturePaymentResponse(ctx.Writer); err != nil {
 			sh.options.ResponseErrorHandlerFunc(ctx, err)
 		}
 	} else if response != nil {

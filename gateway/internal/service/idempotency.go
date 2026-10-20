@@ -15,14 +15,14 @@ import (
 	"github.com/nehemiah-dev/payment-gateway/internal/store"
 )
 
-// AuthorizeResult tells the handler exactly what to send to the client.
+// IdempotentResult tells the handler exactly what to send to the client.
 //
 // The service owns the idempotency ledger: the body marshaled here is
 // finalized into the idempotency_keys table inside the same transaction that
 // commits the payment row, and the handler writes those exact bytes. The
 // original response and any replay are therefore byte-for-byte identical and
 // the ledger can never drift from what the client actually saw.
-type AuthorizeResult struct {
+type IdempotentResult struct {
 	// Replayed reports that this response was not produced by the current
 	// request but restored from a committed idempotency record.
 	Replayed bool
@@ -37,6 +37,30 @@ const (
 	idempotencyStatusComplete   = "complete"
 )
 
+// idempotencyScope carries the gateway idempotency coordinates stamped by the
+// middleware, extracted once per request.
+type idempotencyScope struct {
+	key      string
+	path     string
+	bodyHash string
+}
+
+func scopeFromAuthorize(req *models.AuthorizePaymentRequest) idempotencyScope {
+	return idempotencyScope{
+		key:      req.GatewayIdempotencyKey,
+		path:     req.GatewayIdempotencyPath,
+		bodyHash: req.GatewayIdempotencyBodyHash,
+	}
+}
+
+func scopeFromCapture(req *models.CapturePaymentRequest) idempotencyScope {
+	return idempotencyScope{
+		key:      req.GatewayIdempotencyKey,
+		path:     req.GatewayIdempotencyPath,
+		bodyHash: req.GatewayIdempotencyBodyHash,
+	}
+}
+
 // claimIdempotency reserves the (key, path) slot inside the caller's open
 // payment transaction. Outcomes:
 //
@@ -46,8 +70,8 @@ const (
 //	                 must respond with result instead of processing the
 //	                 request (replay, or a 409 conflict).
 //	(nil, err)     — infrastructure failure; the caller rolls back.
-func claimIdempotency(ctx context.Context, repo *repository.Repository, req *models.AuthorizePaymentRequest) (*AuthorizeResult, error) {
-	err := repo.ReserveIdempotencyKey(ctx, req.GatewayIdempotencyKey, req.GatewayIdempotencyPath, req.GatewayIdempotencyBodyHash)
+func claimIdempotency(ctx context.Context, repo *repository.Repository, scope idempotencyScope) (*IdempotentResult, error) {
+	err := repo.ReserveIdempotencyKey(ctx, scope.key, scope.path, scope.bodyHash)
 	if err == nil {
 		return nil, nil
 	}
@@ -59,24 +83,24 @@ func claimIdempotency(ctx context.Context, repo *repository.Repository, req *mod
 	// our INSERT until the owning transaction settles, then sees it either
 	// complete (replayable) or in_progress (a stale record left by the former
 	// middleware-owned flow).
-	existing, getErr := repo.GetIdempotencyKey(ctx, req.GatewayIdempotencyKey, req.GatewayIdempotencyPath)
+	existing, getErr := repo.GetIdempotencyKey(ctx, scope.key, scope.path)
 	if getErr != nil {
 		return nil, NewInternalError(fmt.Errorf("load idempotency record: %w", getErr))
 	}
 
-	return resolveIdempotencyConflict(&existing, req.GatewayIdempotencyBodyHash), nil
+	return resolveIdempotencyConflict(&existing, scope.bodyHash), nil
 }
 
 // resolveIdempotencyConflict decides the response when a committed record
 // already holds the (key, path) slot. Pure so it can be tested without a DB.
-func resolveIdempotencyConflict(existing *store.IdempotencyKey, requestHash string) *AuthorizeResult {
+func resolveIdempotencyConflict(existing *store.IdempotencyKey, requestHash string) *IdempotentResult {
 	if existing.RequestHash != requestHash {
 		zap.L().Warn(
 			"idempotency key reused with different request body",
 			zap.String("idempotency_key", existing.Key),
 			zap.String("path", existing.RequestPath),
 		)
-		return &AuthorizeResult{
+		return &IdempotentResult{
 			StatusCode: http.StatusConflict,
 			Body: idempotencyErrorBody(
 				"idempotency_key_conflict",
@@ -91,7 +115,7 @@ func resolveIdempotencyConflict(existing *store.IdempotencyKey, requestHash stri
 			zap.String("idempotency_key", existing.Key),
 			zap.String("path", existing.RequestPath),
 		)
-		return &AuthorizeResult{
+		return &IdempotentResult{
 			StatusCode: http.StatusConflict,
 			Body: idempotencyErrorBody(
 				"idempotency_key_in_progress",
@@ -103,7 +127,7 @@ func resolveIdempotencyConflict(existing *store.IdempotencyKey, requestHash stri
 	// The slot is complete — the committed outcome already exists, replay it
 	// verbatim so the client reliably learns what happened, whatever the
 	// recorded status is.
-	return &AuthorizeResult{
+	return &IdempotentResult{
 		Replayed:   true,
 		StatusCode: int(existing.ResponseCode.Int32),
 		Body:       append(json.RawMessage(nil), existing.ResponseBody...),

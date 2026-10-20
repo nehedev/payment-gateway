@@ -61,6 +61,16 @@ func NewInvalidCardError(message string) *PaymentError {
 	}
 }
 
+// NewBankDeclineError wraps a specific bank decline, preserving the bank's
+// error code verbatim so the client sees the taxonomy it integrates with.
+func NewBankDeclineError(code bankclient.ErrorCode, message string, statusCode int) *PaymentError {
+	return &PaymentError{
+		StatusCode: statusCode,
+		Code:       string(code),
+		Message:    message,
+	}
+}
+
 func NewBankUnavailableError(err error) *PaymentError {
 	return &PaymentError{
 		StatusCode: http.StatusServiceUnavailable,
@@ -100,6 +110,20 @@ func MapBankError(err error) error {
 
 	case bankclient.ErrorInvalidAmount:
 		return NewValidationError(bankErr.Message)
+
+	case bankclient.ErrorAuthorizationNotFound,
+		bankclient.ErrorAuthorizationExpired,
+		bankclient.ErrorAuthorizationAlreadyUsed,
+		bankclient.ErrorAlreadyCaptured,
+		bankclient.ErrorAlreadyVoided,
+		bankclient.ErrorAlreadyRefunded:
+		// The authorization can no longer be captured/executed — its state
+		// has irreversibly moved on. A conflict, not a validation error.
+		return NewBankDeclineError(bankErr.Code, bankErr.Message, http.StatusConflict)
+
+	case bankclient.ErrorAmountMismatch:
+		// Client-fixable defect: nothing wrong with the authorization itself.
+		return NewBankDeclineError(bankErr.Code, bankErr.Message, http.StatusBadRequest)
 
 	case bankclient.ErrorInternal:
 		if bankErr.Retryable {

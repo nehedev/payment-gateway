@@ -33,7 +33,7 @@ func (r Repository) GetPaymentByID(ctx context.Context, id int) (store.Payment, 
 	return r.queries.GetPaymentByID(ctx, int64(id))
 }
 
-func (r Repository) GetPaymentByRef(ctx context.Context, ref uuid.UUID) (store.Payment, error) {
+func (r Repository) GetPaymentByReference(ctx context.Context, ref uuid.UUID) (store.Payment, error) {
 	return r.queries.GetPaymentByReference(ctx, ref)
 }
 

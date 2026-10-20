@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/nehemiah-dev/payment-gateway/internal/models"
 )
 
@@ -57,6 +59,23 @@ func ValidateAuthorizationRequest(req *models.AuthorizePaymentRequest) error {
 	// Validate customer ID
 	if strings.TrimSpace(req.CustomerID) == "" {
 		return fmt.Errorf("customer_id is required")
+	}
+
+	return nil
+}
+
+// ValidateCaptureRequest validates the capture request.
+func ValidateCaptureRequest(req *models.CapturePaymentRequest) error {
+	// Validate amount — the capture must move the FULL authorized amount; an
+	// exact match against the authorized amount is checked against the stored
+	// payment row in the service.
+	if req.Amount <= 0 {
+		return fmt.Errorf("amount must be greater than 0")
+	}
+
+	// Validate reference — it routes to the stored payment row.
+	if _, err := uuid.Parse(req.Reference); err != nil {
+		return fmt.Errorf("payment reference must be a valid UUID")
 	}
 
 	return nil
