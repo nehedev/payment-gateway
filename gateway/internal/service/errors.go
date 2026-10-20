@@ -80,6 +80,14 @@ func NewBankUnavailableError(err error) *PaymentError {
 	}
 }
 
+func NewNotFoundError(message string) *PaymentError {
+	return &PaymentError{
+		StatusCode: http.StatusNotFound,
+		Code:       "payment_not_found",
+		Message:    message,
+	}
+}
+
 func NewInternalError(err error) *PaymentError {
 	return &PaymentError{
 		StatusCode: http.StatusInternalServerError,

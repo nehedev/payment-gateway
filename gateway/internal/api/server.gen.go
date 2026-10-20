@@ -224,6 +224,9 @@ type ServerInterface interface {
 	// AuthorizePayment Authorize a payment
 	// (POST /api/v1/payments/authorize)
 	AuthorizePayment(c *gin.Context, params AuthorizePaymentParams)
+	// GetPayment Get payment details
+	// (GET /api/v1/payments/{reference})
+	GetPayment(c *gin.Context, reference openapi_types.UUID)
 	// CapturePayment Capture an authorized payment
 	// (POST /api/v1/payments/{reference}/capture)
 	CapturePayment(c *gin.Context, reference openapi_types.UUID, params CapturePaymentParams)
@@ -288,6 +291,31 @@ func (siw *ServerInterfaceWrapper) AuthorizePayment(c *gin.Context) {
 	}
 
 	siw.Handler.AuthorizePayment(c, params)
+}
+
+// GetPayment operation middleware
+func (siw *ServerInterfaceWrapper) GetPayment(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "reference" -------------
+	var reference openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "reference", c.Param("reference"), &reference, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter reference: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetPayment(c, reference)
 }
 
 // CapturePayment operation middleware
@@ -490,6 +518,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/payments/:reference/capture", wrapper.CapturePayment)
 	router.POST(options.BaseURL+"/api/v1/payments/:reference/refund", wrapper.RefundPayment)
 	router.POST(options.BaseURL+"/api/v1/payments/:reference/void", wrapper.VoidPayment)
+	router.GET(options.BaseURL+"/api/v1/payments/:reference", wrapper.GetPayment)
 	router.GET(options.BaseURL+"/health", wrapper.GetHealth)
 }
 
@@ -590,6 +619,56 @@ func (response AuthorizePayment503JSONResponse) VisitAuthorizePaymentResponse(w 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPaymentRequestObject struct {
+	Reference openapi_types.UUID `json:"reference"`
+}
+
+type GetPaymentResponseObject interface {
+	VisitGetPaymentResponse(w http.ResponseWriter) error
+}
+
+type GetPayment200JSONResponse PaymentResponse
+
+func (response GetPayment200JSONResponse) VisitGetPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPayment404JSONResponse ErrorResponse
+
+func (response GetPayment404JSONResponse) VisitGetPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPayment500JSONResponse ErrorResponse
+
+func (response GetPayment500JSONResponse) VisitGetPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -939,6 +1018,9 @@ type StrictServerInterface interface {
 	// AuthorizePayment Authorize a payment
 	// (POST /api/v1/payments/authorize)
 	AuthorizePayment(ctx context.Context, request AuthorizePaymentRequestObject) (AuthorizePaymentResponseObject, error)
+	// GetPayment Get payment details
+	// (GET /api/v1/payments/{reference})
+	GetPayment(ctx context.Context, request GetPaymentRequestObject) (GetPaymentResponseObject, error)
 	// CapturePayment Capture an authorized payment
 	// (POST /api/v1/payments/{reference}/capture)
 	CapturePayment(ctx context.Context, request CapturePaymentRequestObject) (CapturePaymentResponseObject, error)
@@ -1036,6 +1118,32 @@ func (sh *strictHandler) AuthorizePayment(ctx *gin.Context, params AuthorizePaym
 		sh.options.HandlerErrorFunc(ctx, err)
 	} else if validResponse, ok := response.(AuthorizePaymentResponseObject); ok {
 		if err := validResponse.VisitAuthorizePaymentResponse(ctx.Writer); err != nil {
+			sh.options.ResponseErrorHandlerFunc(ctx, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(ctx, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetPayment operation middleware
+func (sh *strictHandler) GetPayment(ctx *gin.Context, reference openapi_types.UUID) {
+	var request GetPaymentRequestObject
+
+	request.Reference = reference
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPayment(ctx, request.(GetPaymentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPayment")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		sh.options.HandlerErrorFunc(ctx, err)
+	} else if validResponse, ok := response.(GetPaymentResponseObject); ok {
+		if err := validResponse.VisitGetPaymentResponse(ctx.Writer); err != nil {
 			sh.options.ResponseErrorHandlerFunc(ctx, err)
 		}
 	} else if response != nil {

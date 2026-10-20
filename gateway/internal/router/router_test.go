@@ -56,6 +56,10 @@ func (s *coordinates) VoidPayment(c *gin.Context, _ openapi_types.UUID, _ api.Vo
 	c.Status(http.StatusOK)
 }
 
+func (s *coordinates) GetPayment(c *gin.Context, _ openapi_types.UUID) {
+	c.Status(http.StatusOK)
+}
+
 func (s *coordinates) GetHealth(c *gin.Context) {
 	c.Status(http.StatusOK)
 }

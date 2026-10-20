@@ -317,6 +317,43 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/payments/{reference}:
+    get:
+      operationId: getPayment
+      summary: Get payment details
+      description: |
+        Returns the current state of a payment by its reference. Read-only
+        reporting endpoint backed by the gateway's own payment records; it
+        makes no bank call and requires no Idempotency-Key.
+      tags: [Payments]
+      parameters:
+        - name: reference
+          in: path
+          required: true
+          description: Unique payment reference (UUID) returned by the authorize call
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Payment found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '404':
+          description: Payment not found with the given reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /health:
     get:
       operationId: getHealth
