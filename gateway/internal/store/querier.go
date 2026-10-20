@@ -20,7 +20,7 @@ type Querier interface {
 	GetPaymentByID(ctx context.Context, id int64) (Payment, error)
 	GetPaymentByReference(ctx context.Context, reference uuid.UUID) (Payment, error)
 	ListPaymentsByCustomer(ctx context.Context, arg ListPaymentsByCustomerParams) ([]Payment, error)
-	ListPaymentsByOrder(ctx context.Context, orderID string) ([]Payment, error)
+	ListPaymentsByOrder(ctx context.Context, arg ListPaymentsByOrderParams) ([]Payment, error)
 	RefundPayment(ctx context.Context, arg RefundPaymentParams) (Payment, error)
 	ReleaseIdempotencyKey(ctx context.Context, key string, requestPath string) error
 	ReserveIdempotencyKey(ctx context.Context, arg ReserveIdempotencyKeyParams) (IdempotencyKey, error)

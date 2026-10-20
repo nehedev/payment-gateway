@@ -57,8 +57,8 @@ func (r *Repository) ListPaymentsByCustomer(ctx context.Context, arg store.ListP
 	return r.queries.ListPaymentsByCustomer(ctx, arg)
 }
 
-func (r *Repository) ListPaymentsByOrder(ctx context.Context, orderID string) ([]store.Payment, error) {
-	return r.queries.ListPaymentsByOrder(ctx, orderID)
+func (r *Repository) ListPaymentsByOrder(ctx context.Context, arg store.ListPaymentsByOrderParams) ([]store.Payment, error) {
+	return r.queries.ListPaymentsByOrder(ctx, arg)
 }
 
 func (r *Repository) FailPayment(ctx context.Context, paymentID int64) (store.Payment, error) {

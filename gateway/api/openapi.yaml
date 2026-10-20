@@ -354,6 +354,66 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/payments:
+    get:
+      operationId: listPayments
+      summary: List payments
+      description: |
+        Lists stored payments filtered by exactly one of customer_id or
+        order_id, newest first. Read-only reporting endpoint backed by the
+        gateway's own payment records; it makes no bank call and requires no
+        Idempotency-Key.
+      tags: [Payments]
+      parameters:
+        - name: customer_id
+          in: query
+          description: Filter by customer ID
+          schema:
+            type: string
+            maxLength: 50
+        - name: order_id
+          in: query
+          description: Filter by order ID
+          schema:
+            type: string
+            maxLength: 50
+        - name: limit
+          in: query
+          description: Maximum number of payments to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          description: Number of payments to skip
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Payments matching the filter
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PaymentResponse'
+        '400':
+          description: Validation error (missing both filters or both supplied)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /health:
     get:
       operationId: getHealth

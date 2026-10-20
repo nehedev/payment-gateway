@@ -273,10 +273,17 @@ const listPaymentsByOrder = `-- name: ListPaymentsByOrder :many
 SELECT id, reference, amount_cents, currency, card_last_four, customer_id, order_id, payment_state, authorization_id, capture_id, refund_id, void_id, metadata, created_at, updated_at FROM payments
 WHERE order_id = $1
 ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
 `
 
-func (q *Queries) ListPaymentsByOrder(ctx context.Context, orderID string) ([]Payment, error) {
-	rows, err := q.db.Query(ctx, listPaymentsByOrder, orderID)
+type ListPaymentsByOrderParams struct {
+	OrderID string `json:"order_id"`
+	Limit   int32  `json:"limit"`
+	Offset  int32  `json:"offset"`
+}
+
+func (q *Queries) ListPaymentsByOrder(ctx context.Context, arg ListPaymentsByOrderParams) ([]Payment, error) {
+	rows, err := q.db.Query(ctx, listPaymentsByOrder, arg.OrderID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}

@@ -186,6 +186,21 @@ type RefundPaymentRequest struct {
 	Amount int64 `json:"amount"`
 }
 
+// ListPaymentsParams defines parameters for ListPayments.
+type ListPaymentsParams struct {
+	// CustomerId Filter by customer ID
+	CustomerId string `form:"customer_id,omitempty" json:"customer_id,omitempty,omitzero"`
+
+	// OrderId Filter by order ID
+	OrderId string `form:"order_id,omitempty" json:"order_id,omitempty,omitzero"`
+
+	// Limit Maximum number of payments to return
+	Limit int `form:"limit,omitempty" json:"limit,omitempty,omitzero"`
+
+	// Offset Number of payments to skip
+	Offset int `form:"offset,omitempty" json:"offset,omitempty,omitzero"`
+}
+
 // AuthorizePaymentParams defines parameters for AuthorizePayment.
 type AuthorizePaymentParams struct {
 	// IdempotencyKey Unique key to ensure idempotent processing (max 255 chars)
@@ -221,6 +236,9 @@ type RefundPaymentJSONRequestBody = RefundPaymentRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ListPayments List payments
+	// (GET /api/v1/payments)
+	ListPayments(c *gin.Context, params ListPaymentsParams)
 	// AuthorizePayment Authorize a payment
 	// (POST /api/v1/payments/authorize)
 	AuthorizePayment(c *gin.Context, params AuthorizePaymentParams)
@@ -249,6 +267,57 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(c *gin.Context)
+
+// ListPayments operation middleware
+func (siw *ServerInterfaceWrapper) ListPayments(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListPaymentsParams
+
+	// ------------- Optional query parameter "customer_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "customer_id", c.Request.URL.Query(), &params.CustomerId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter customer_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "order_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "order_id", c.Request.URL.Query(), &params.OrderId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter order_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", c.Request.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "offset" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "offset", c.Request.URL.Query(), &params.Offset, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter offset: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListPayments(c, params)
+}
 
 // AuthorizePayment operation middleware
 func (siw *ServerInterfaceWrapper) AuthorizePayment(c *gin.Context) {
@@ -519,7 +588,58 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/payments/:reference/refund", wrapper.RefundPayment)
 	router.POST(options.BaseURL+"/api/v1/payments/:reference/void", wrapper.VoidPayment)
 	router.GET(options.BaseURL+"/api/v1/payments/:reference", wrapper.GetPayment)
+	router.GET(options.BaseURL+"/api/v1/payments", wrapper.ListPayments)
 	router.GET(options.BaseURL+"/health", wrapper.GetHealth)
+}
+
+type ListPaymentsRequestObject struct {
+	Params ListPaymentsParams
+}
+
+type ListPaymentsResponseObject interface {
+	VisitListPaymentsResponse(w http.ResponseWriter) error
+}
+
+type ListPayments200JSONResponse []PaymentResponse
+
+func (response ListPayments200JSONResponse) VisitListPaymentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPayments400JSONResponse ErrorResponse
+
+func (response ListPayments400JSONResponse) VisitListPaymentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPayments500JSONResponse ErrorResponse
+
+func (response ListPayments500JSONResponse) VisitListPaymentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type AuthorizePaymentRequestObject struct {
@@ -1015,6 +1135,9 @@ func (response GetHealth503JSONResponse) VisitGetHealthResponse(w http.ResponseW
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ListPayments List payments
+	// (GET /api/v1/payments)
+	ListPayments(ctx context.Context, request ListPaymentsRequestObject) (ListPaymentsResponseObject, error)
 	// AuthorizePayment Authorize a payment
 	// (POST /api/v1/payments/authorize)
 	AuthorizePayment(ctx context.Context, request AuthorizePaymentRequestObject) (AuthorizePaymentResponseObject, error)
@@ -1090,6 +1213,32 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictGinServerOptions
+}
+
+// ListPayments operation middleware
+func (sh *strictHandler) ListPayments(ctx *gin.Context, params ListPaymentsParams) {
+	var request ListPaymentsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.ListPayments(ctx, request.(ListPaymentsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListPayments")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		sh.options.HandlerErrorFunc(ctx, err)
+	} else if validResponse, ok := response.(ListPaymentsResponseObject); ok {
+		if err := validResponse.VisitListPaymentsResponse(ctx.Writer); err != nil {
+			sh.options.ResponseErrorHandlerFunc(ctx, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(ctx, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // AuthorizePayment operation middleware

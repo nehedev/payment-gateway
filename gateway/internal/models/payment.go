@@ -70,6 +70,18 @@ type VoidPaymentRequest struct {
 	GatewayIdempotencyBodyHash string `json:"-"`
 }
 
+// ListPaymentsRequest lists stored payments for exactly one filter.
+type ListPaymentsRequest struct {
+	// CustomerID filters by customer; mutually exclusive with OrderID.
+	CustomerID string
+	// OrderID filters by order; mutually exclusive with CustomerID.
+	OrderID string
+	// Limit caps the result size; zero or negative falls back to the default.
+	Limit int
+	// Offset skips this many payments from the newest.
+	Offset int
+}
+
 type PaymentResponse struct {
 	PaymentID     string     `json:"payment_id"`
 	Reference     string     `json:"reference"`

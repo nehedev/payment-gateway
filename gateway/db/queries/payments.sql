@@ -21,7 +21,8 @@ LIMIT $2 OFFSET $3;
 -- name: ListPaymentsByOrder :many
 SELECT * FROM payments
 WHERE order_id = $1
-ORDER BY created_at DESC;
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3;
 
 -- name: AuthorizePayment :one
 UPDATE payments
